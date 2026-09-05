@@ -1,0 +1,50 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function userDoc() { return get(/databases/$(database)/documents/artifacts/validapp-default/public/data/users/$(request.auth.uid)); }
+    function role(r) { return signedIn() && userDoc().data.active == true && userDoc().data.role == r; }
+    function anyRole(rs) { return signedIn() && userDoc().data.active == true && userDoc().data.role in rs; }
+    function isAdmin() { return role('Administrator'); }
+    function isCreator() { return anyRole(['Creator','Administrator']); }
+    function isApprover() { return anyRole(['Reviewer','Section Head','Deputy QA Manager','QA Manager','Administrator']); }
+
+    match /artifacts/validapp-default/public/data/users/{uid} {
+      allow read: if signedIn();
+      allow create: if isAdmin();
+      allow update: if isAdmin() || (request.auth.uid == uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName']));
+      allow delete: if isAdmin();
+    }
+
+    match /artifacts/validapp-default/public/data/records/{studyId} {
+      allow read: if signedIn();
+      allow create: if isCreator() && request.resource.data.createdByUid == request.auth.uid;
+      allow update: if (isCreator() && resource.data.createdByUid == request.auth.uid && resource.data.status != 'Approved'
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['productName','studyCategory','productType','date','stage','version','scale','reviewerDepartment','reason','notes','status','updatedAt'])
+                    && request.resource.data.status in ['Draft','Pending Section Head'])
+                    || (isApprover() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updatedAt','returnedBy','returnedByRole','returnedAt','approvedBy','approvedByRole','approvedAt','rejectedBy','rejectedAt']))
+                    || (isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /artifacts/validapp-default/public/data/documents/{docId} {
+      allow read: if signedIn();
+      allow create: if isCreator() && request.resource.data.uploadedByUid == request.auth.uid;
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    match /artifacts/validapp-default/public/data/reviews/{reviewId} {
+      allow read: if signedIn();
+      allow create: if isApprover() && request.resource.data.userUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /artifacts/validapp-default/public/data/audit/{auditId} {
+      allow read: if isApprover() || isCreator();
+      allow create: if signedIn() && request.resource.data.userUid == request.auth.uid
+      && request.resource.data.role == userDoc().data.role && request.resource.data.email == userDoc().data.email;
+      allow update, delete: if false;
+    }
+  }
+}

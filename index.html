@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ValidApp V2 — Validation Study Workflow</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <style>
+    body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f3f6fb}
+    .modal{display:none}.modal.active{display:flex}.pill{font-size:.72rem;font-weight:700;border-radius:9999px;padding:.25rem .6rem;border:1px solid}
+    .dropzone.drag{border-color:#2563eb;background:#eff6ff}
+  </style>
+</head>
+<body class="min-h-screen text-slate-800">
+<nav class="bg-slate-900 text-white sticky top-0 z-40 shadow-lg">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+    <div class="flex items-center gap-3"><div class="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center"><i class="fa-solid fa-flask"></i></div><div><div class="text-xl font-bold">ValidApp</div><div class="text-xs text-slate-300">Validation Study Workflow</div></div></div>
+    <div id="sessionArea" class="hidden items-center gap-3">
+      <div class="text-right"><div id="userName" class="font-semibold text-sm"></div><div id="userRole" class="text-xs text-slate-300"></div></div>
+      <button id="auditBtn" class="hidden px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm"><i class="fa-solid fa-clock-rotate-left mr-1"></i>Audit Trail</button>
+      <button id="usersBtn" class="hidden px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm"><i class="fa-solid fa-users-gear mr-1"></i>Users</button>
+      <button id="logoutBtn" class="px-3 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-sm"><i class="fa-solid fa-right-from-bracket mr-1"></i>Logout</button>
+    </div>
+  </div>
+</nav>
+
+<main class="max-w-7xl mx-auto px-4 py-6">
+  <section id="loginView" class="max-w-md mx-auto mt-12 bg-white rounded-2xl shadow-xl p-8 border border-slate-200">
+    <div class="text-center mb-7"><div class="inline-flex w-16 h-16 rounded-2xl bg-blue-100 text-blue-700 items-center justify-center text-3xl mb-4"><i class="fa-solid fa-shield-halved"></i></div><h1 class="text-2xl font-bold">Secure Sign In</h1><p class="text-slate-500 text-sm mt-1">Use your ValidApp account.</p></div>
+    <form id="loginForm" class="space-y-4">
+      <div><label class="block text-sm font-medium mb-1">Email</label><input id="loginEmail" type="email" required class="w-full px-3 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 outline-none"></div>
+      <div><label class="block text-sm font-medium mb-1">Password</label><input id="loginPassword" type="password" required class="w-full px-3 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 outline-none"></div>
+      <div id="loginError" class="hidden text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+      <button class="w-full py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold"><i class="fa-solid fa-right-to-bracket mr-2"></i>Sign In</button>
+    </form>
+    <div class="mt-5 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-3">This V2 build uses Firebase Authentication. Create/enable Email & Password accounts in Firebase and assign each user's role in the Users screen or Firebase Console.</div>
+  </section>
+
+  <section id="appView" class="hidden">
+    <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-5">
+      <div><h2 class="text-2xl font-bold">Studies</h2><p id="scopeText" class="text-sm text-slate-500"></p></div>
+      <button id="newStudyBtn" class="hidden px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow"><i class="fa-solid fa-plus mr-2"></i>Create Study</button>
+    </div>
+    <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4 mb-4 grid grid-cols-1 md:grid-cols-4 gap-3">
+      <input id="searchInput" placeholder="Search product / study" class="px-3 py-2 rounded-lg border border-slate-300 outline-none focus:ring-2 focus:ring-blue-500">
+      <select id="categoryFilter" class="px-3 py-2 rounded-lg border border-slate-300"><option value="All">All categories</option><option>Process Validation</option><option>Hold Time Study</option><option>Cleaning Validation</option></select>
+      <select id="statusFilter" class="px-3 py-2 rounded-lg border border-slate-300"><option value="All">All statuses</option><option>Draft</option><option>Pending Section Head</option><option>Pending Reviewer</option><option>Pending Deputy QA</option><option>Pending QA Manager</option><option>Returned for Revision</option><option>Approved</option><option>Rejected</option></select>
+      <button id="clearFilterBtn" class="px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 font-medium">Clear filters</button>
+    </div>
+    <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="overflow-x-auto"><table class="min-w-full"><thead class="bg-slate-50 border-b"><tr>
+        <th class="px-4 py-3 text-left text-xs font-bold uppercase text-slate-500">Study</th><th class="px-4 py-3 text-left text-xs font-bold uppercase text-slate-500">Category</th><th class="px-4 py-3 text-left text-xs font-bold uppercase text-slate-500">Creator</th><th class="px-4 py-3 text-left text-xs font-bold uppercase text-slate-500">Status</th><th class="px-4 py-3 text-left text-xs font-bold uppercase text-slate-500">Updated</th><th class="px-4 py-3 text-right text-xs font-bold uppercase text-slate-500">Actions</th>
+      </tr></thead><tbody id="studyTable" class="divide-y divide-slate-100"></tbody></table></div>
+      <div id="emptyState" class="hidden p-12 text-center text-slate-400"><i class="fa-solid fa-folder-open text-4xl mb-3"></i><div>No studies found.</div></div>
+    </div>
+  </section>
+</main>
+
+<!-- Study modal -->
+<div id="studyModal" class="modal fixed inset-0 bg-slate-900/60 z-50 items-center justify-center p-4">
+<div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[94vh] overflow-hidden flex flex-col">
+  <div class="bg-blue-700 text-white px-5 py-4 flex justify-between items-center"><div><div id="studyModalTitle" class="text-xl font-bold">Create Study</div><div id="studyModalSub" class="text-xs text-blue-100"></div></div><button data-close="studyModal" class="text-white/80 hover:text-white text-xl"><i class="fa-solid fa-xmark"></i></button></div>
+  <form id="studyForm" class="overflow-y-auto p-5 space-y-5">
+    <input type="hidden" id="studyId">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="md:col-span-2"><label class="block text-sm font-medium mb-1">Product / API Name *</label><input id="productName" required class="w-full px-3 py-2 rounded-lg border border-slate-300"></div>
+      <div><label class="block text-sm font-medium mb-1">Study Category *</label><select id="studyCategory" required class="w-full px-3 py-2 rounded-lg border border-slate-300"><option>Process Validation</option><option>Hold Time Study</option><option>Cleaning Validation</option></select></div>
+      <div><label class="block text-sm font-medium mb-1">Product Type *</label><select id="productType" required class="w-full px-3 py-2 rounded-lg border border-slate-300"><option>Finished Product</option><option>Bulk Product</option><option>API</option></select></div>
+      <div><label class="block text-sm font-medium mb-1">Study Date *</label><input id="studyDate" type="date" required class="w-full px-3 py-2 rounded-lg border border-slate-300"></div>
+      <div><label class="block text-sm font-medium mb-1">Stage *</label><select id="stage" required class="w-full px-3 py-2 rounded-lg border border-slate-300"><option>Raw</option><option>Bulk</option><option>Finished Product</option><option>Cleaning Validation</option><option>CHT</option><option>DHT</option><option>Campaign Length</option></select></div>
+      <div><label class="block text-sm font-medium mb-1">Version *</label><input id="version" value="v1.0" required class="w-full px-3 py-2 rounded-lg border border-slate-300"></div>
+      <div><label class="block text-sm font-medium mb-1">Scale *</label><select id="scale" required class="w-full px-3 py-2 rounded-lg border border-slate-300"><option>Lab Scale</option><option>Pilot Scale</option><option>Commercial Scale</option></select></div>
+      <div><label class="block text-sm font-medium mb-1">Reviewer Department</label><input id="reviewerDepartment" placeholder="e.g. Production, QC, Engineering" class="w-full px-3 py-2 rounded-lg border border-slate-300"></div>
+    </div>
+    <div><label class="block text-sm font-medium mb-1">Reason for Validation / Study *</label><textarea id="reason" rows="3" required class="w-full px-3 py-2 rounded-lg border border-slate-300"></textarea></div>
+    <div><label class="block text-sm font-medium mb-1">Notes</label><textarea id="notes" rows="2" class="w-full px-3 py-2 rounded-lg border border-slate-300"></textarea></div>
+
+    <div id="documentSection">
+      <div class="flex items-center justify-between mb-2"><div><h3 class="font-bold">Study Documents</h3><p class="text-xs text-slate-500">Creator only. PDF, Word and Excel. Max 25 MB per file.</p></div><label id="uploadLabel" class="hidden cursor-pointer px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-sm"><i class="fa-solid fa-upload mr-1"></i>Add Files<input id="fileInput" type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hidden"></label></div>
+      <div id="dropzone" class="dropzone border-2 border-dashed border-slate-300 rounded-xl p-5 text-center text-slate-500"><i class="fa-solid fa-file-arrow-up text-2xl mb-2"></i><div>Drop files here or use Add Files</div><div class="text-xs mt-1">Allowed: PDF / DOC / DOCX / XLS / XLSX</div></div>
+      <div id="documentList" class="mt-3 space-y-2"></div>
+    </div>
+
+    <div id="reviewHistorySection" class="border-t pt-4"><div class="flex justify-between items-center mb-2"><h3 class="font-bold">Review & Comment History</h3><span class="text-xs text-slate-500">Permanent history</span></div><div id="reviewHistory" class="space-y-2"></div></div>
+    <div id="returnBanner" class="hidden rounded-xl border border-amber-300 bg-amber-50 p-4"><div class="font-bold text-amber-900"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Returned for Revision</div><div id="returnBannerText" class="text-sm text-amber-900 mt-1"></div></div>
+
+    <div class="flex flex-wrap justify-end gap-2 border-t pt-4">
+      <button type="button" data-close="studyModal" class="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200">Close</button>
+      <button id="saveDraftBtn" type="button" class="hidden px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-900 text-white">Save Draft</button>
+      <button id="submitStudyBtn" type="submit" class="hidden px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold">Submit for Review</button>
+      <button id="reviewAcceptBtn" type="button" class="hidden px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold">Complete Review</button>
+      <button id="returnBtn" type="button" class="hidden px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-semibold">Return to Creator</button>
+      <button id="approveBtn" type="button" class="hidden px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-semibold">Approve</button>
+      <button id="rejectBtn" type="button" class="hidden px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold">Reject</button>
+    </div>
+  </form>
+</div></div>
+
+<!-- Review comment modal -->
+<div id="commentModal" class="modal fixed inset-0 bg-slate-900/60 z-[60] items-center justify-center p-4"><div class="bg-white rounded-2xl shadow-2xl w-full max-w-xl"><div class="px-5 py-4 border-b"><h3 id="commentModalTitle" class="text-lg font-bold">Review Comment</h3><p id="commentModalHint" class="text-sm text-slate-500"></p></div><div class="p-5"><textarea id="commentInput" rows="6" class="w-full border border-slate-300 rounded-xl px-3 py-2" placeholder="Enter your review comment..."></textarea><div id="commentRequired" class="hidden text-sm text-red-600 mt-2">Comment is required when returning or rejecting a study.</div></div><div class="px-5 py-4 bg-slate-50 flex justify-end gap-2"><button data-close="commentModal" class="px-4 py-2 rounded-lg bg-slate-200">Cancel</button><button id="commentConfirmBtn" class="px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold">Confirm</button></div></div></div>
+
+<!-- Users modal -->
+<div id="usersModal" class="modal fixed inset-0 bg-slate-900/60 z-50 items-center justify-center p-4"><div class="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col"><div class="bg-slate-900 text-white px-5 py-4 flex justify-between items-center"><div><h3 class="text-xl font-bold">User & Role Directory</h3><div class="text-xs text-slate-300">Roles are enforced by Firebase security rules in the supplied V2 rules.</div></div><button data-close="usersModal" class="text-xl"><i class="fa-solid fa-xmark"></i></button></div><div class="p-5 overflow-auto"><form id="userForm" class="grid grid-cols-1 md:grid-cols-5 gap-2 bg-slate-50 p-4 rounded-xl border mb-4"><input id="newUserEmail" type="email" placeholder="Email" required class="px-3 py-2 border rounded-lg"><input id="newUserName" placeholder="Display name" required class="px-3 py-2 border rounded-lg"><select id="newUserRole" class="px-3 py-2 border rounded-lg"><option>Creator</option><option>Viewer</option><option>Reviewer</option><option>Section Head</option><option>Deputy QA Manager</option><option>QA Manager</option><option>Administrator</option></select><input id="newUserDepartment" placeholder="Department" class="px-3 py-2 border rounded-lg"><button class="px-3 py-2 rounded-lg bg-blue-600 text-white font-semibold">Create User</button></form><div id="userMsg" class="hidden mb-3 p-3 rounded-lg text-sm"></div><div class="overflow-x-auto"><table class="min-w-full"><thead class="bg-slate-100"><tr><th class="px-3 py-2 text-left text-xs uppercase">Name</th><th class="px-3 py-2 text-left text-xs uppercase">Email</th><th class="px-3 py-2 text-left text-xs uppercase">Role</th><th class="px-3 py-2 text-left text-xs uppercase">Department</th><th class="px-3 py-2 text-left text-xs uppercase">Active</th></tr></thead><tbody id="userTable" class="divide-y"></tbody></table></div></div></div></div>
+
+<!-- Audit modal -->
+<div id="auditModal" class="modal fixed inset-0 bg-slate-900/60 z-50 items-center justify-center p-4"><div class="bg-white rounded-2xl shadow-2xl w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col"><div class="bg-slate-900 text-white px-5 py-4 flex justify-between items-center"><div><h3 class="text-xl font-bold">Audit Trail</h3><div class="text-xs text-slate-300">Immutable append-only activity log.</div></div><button data-close="auditModal" class="text-xl"><i class="fa-solid fa-xmark"></i></button></div><div class="p-5 overflow-auto"><div class="overflow-x-auto"><table class="min-w-full"><thead class="bg-slate-100"><tr><th class="px-3 py-2 text-left text-xs uppercase">Time</th><th class="px-3 py-2 text-left text-xs uppercase">User / Role</th><th class="px-3 py-2 text-left text-xs uppercase">Action</th><th class="px-3 py-2 text-left text-xs uppercase">Study</th><th class="px-3 py-2 text-left text-xs uppercase">Details</th></tr></thead><tbody id="auditTable" class="divide-y"></tbody></table></div></div></div></div>
+
+<div id="toast" class="fixed right-4 bottom-4 hidden z-[100]"></div>
+
+<script type="module">
+import { initializeApp, getApps } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword, sendPasswordResetEmail } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+import { getFirestore, collection, doc, getDoc, setDoc, updateDoc, addDoc, query, orderBy, onSnapshot, serverTimestamp, where, getDocs } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+import { getStorage, ref, uploadBytesResumable, getDownloadURL } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js';
+
+const firebaseConfig={
+ apiKey:'AIzaSyDEV8rEluViDZiA5nnv7BiIU78rgq5en8A',
+ authDomain:'validapp-db.firebaseapp.com',
+ projectId:'validapp-db',
+ storageBucket:'validapp-db.firebasestorage.app',
+ messagingSenderId:'702664233017',
+ appId:'1:702664233017:web:25fbede2f3c7244cdbfde8',
+ measurementId:'G-7FTDYP0XWS'
+};
+const app=getApps().length?getApps()[0]:initializeApp(firebaseConfig);
+const auth=getAuth(app), db=getFirestore(app), storage=getStorage(app);
+const PATH='artifacts/validapp-default/public/data';
+const roles={ADMIN:'Administrator',CREATOR:'Creator',VIEWER:'Viewer',REVIEWER:'Reviewer',SECTION:'Section Head',DEPUTY:'Deputy QA Manager',QA:'QA Manager'};
+const status={DRAFT:'Draft',PENDING_SECTION:'Pending Section Head',PENDING_REVIEWER:'Pending Reviewer',PENDING_DEPUTY:'Pending Deputy QA',PENDING_QA:'Pending QA Manager',RETURNED:'Returned for Revision',APPROVED:'Approved',REJECTED:'Rejected'};
+const ALLOWED_FILES=['application/pdf','application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document','application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'];
+const MAX_FILE_SIZE=25*1024*1024;
+let currentUser=null, currentProfile=null, studies=[], users=[], auditLogs=[], selectedStudy=null, pendingAction=null, pendingFiles=[];
+const $=id=>document.getElementById(id);
+const col=name=>collection(db,PATH,name); const refDoc=(name,id)=>doc(db,PATH,name,id);
+const nowIso=()=>new Date().toISOString();
+const esc=v=>String(v??'').replace(/[&<>\"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\\':'\\\\','"':'&quot;'}[m]||m));
+function toast(msg,type='ok'){const t=$('toast');t.className=`fixed right-4 bottom-4 z-[100] px-4 py-3 rounded-xl shadow-xl text-sm font-semibold ${type==='err'?'bg-red-600':'bg-slate-900'} text-white`;t.textContent=msg;t.classList.remove('hidden');setTimeout(()=>t.classList.add('hidden'),3000)}
+function pill(s){let c='bg-slate-100 text-slate-700 border-slate-200';if(s===status.APPROVED)c='bg-emerald-50 text-emerald-700 border-emerald-200';else if(s===status.RETURNED)c='bg-amber-50 text-amber-800 border-amber-200';else if(s===status.REJECTED)c='bg-red-50 text-red-700 border-red-200';else if(s.includes('Pending'))c='bg-blue-50 text-blue-700 border-blue-200';return `<span class="pill ${c}">${esc(s)}</span>`}
+function canCreate(){return [roles.CREATOR,roles.ADMIN].includes(currentProfile?.role)}
+function canUpload(){return [roles.CREATOR,roles.ADMIN].includes(currentProfile?.role)}
+function isApprovalRole(){return [roles.REVIEWER,roles.SECTION,roles.DEPUTY,roles.QA,roles.ADMIN].includes(currentProfile?.role)}
+function visibleStudies(){if(!currentProfile)return[];if(currentProfile.role===roles.CREATOR)return studies.filter(s=>s.createdByUid===currentUser.uid || s.createdBy===currentProfile.displayName || s.createdBy===currentProfile.email);return studies}
+function stageForNext(st){switch(st){case status.DRAFT:case status.RETURNED:return status.PENDING_SECTION;case status.PENDING_SECTION:return status.PENDING_REVIEWER;case status.PENDING_REVIEWER:return status.PENDING_DEPUTY;case status.PENDING_DEPUTY:return status.PENDING_QA;default:return status.APPROVED}}
+function currentStageMatches(st){const r=currentProfile?.role;if(r===roles.SECTION)return st===status.PENDING_SECTION;if(r===roles.REVIEWER)return st===status.PENDING_REVIEWER;if(r===roles.DEPUTY)return st===status.PENDING_DEPUTY;if(r===roles.QA)return st===status.PENDING_QA;if(r===roles.ADMIN)return ![status.APPROVED,status.REJECTED].includes(st);return false}
+async function logAction(action, study, details=''){if(!currentUser||!currentProfile)return;try{await addDoc(col('audit'),{timestamp:serverTimestamp(),sortTime:Date.now(),userUid:currentUser.uid,user:currentProfile.displayName||currentProfile.email,email:currentProfile.email,role:currentProfile.role,department:currentProfile.department||'',action,studyId:study?.id||'',product:study?.productName||'',details:String(details).slice(0,2000)});}catch(e){console.warn('Audit log failed',e)}}
+
+function openModal(id){$(id).classList.add('active')}function closeModal(id){$(id).classList.remove('active')}
+document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click',()=>closeModal(b.dataset.close)));
+
+$('loginForm').addEventListener('submit',async e=>{e.preventDefault();$('loginError').classList.add('hidden');try{await signInWithEmailAndPassword(auth,$('loginEmail').value.trim(),$('loginPassword').value); }catch(err){$('loginError').textContent=err.message.replace('Firebase: ','');$('loginError').classList.remove('hidden')}});
+$('logoutBtn').addEventListener('click',async()=>{await logAction('LOGOUT',null,'User signed out');await signOut(auth)});
+$('searchInput').addEventListener('input',renderStudies);$('categoryFilter').addEventListener('change',renderStudies);$('statusFilter').addEventListener('change',renderStudies);$('clearFilterBtn').addEventListener('click',()=>{$('searchInput').value='';$('categoryFilter').value='All';$('statusFilter').value='All';renderStudies()});
+$('newStudyBtn').addEventListener('click',()=>openStudyForm());
+$('auditBtn').addEventListener('click',()=>{renderAudit();openModal('auditModal');logAction('VIEW_AUDIT_TRAIL',null,'Opened audit trail')});
+$('usersBtn').addEventListener('click',()=>{renderUsers();openModal('usersModal');logAction('VIEW_USER_DIRECTORY',null,'Opened user directory')});
+
+function resetStudyForm(){ $('studyForm').reset();$('studyId').value='';$('studyDate').value=new Date().toISOString().slice(0,10);$('version').value='v1.0';pendingFiles=[];$('documentList').innerHTML='';$('reviewHistory').innerHTML='<div class="text-sm text-slate-400">No review comments yet.</div>';$('returnBanner').classList.add('hidden'); }
+async function openStudyForm(id=null){resetStudyForm();if(id){const s=studies.find(x=>x.id===id);if(!s)return;selectedStudy=s;$('studyModalTitle').textContent='Study Details';$('studyModalSub').textContent=`${s.productName} • ${s.id}`;fillStudy(s);await loadDocuments(s.id);await loadReviews(s.id);await logAction('VIEW_STUDY',s,'Opened study details');}else{$('studyModalTitle').textContent='Create Study';$('studyModalSub').textContent='Creator only';}
+ const editable=!id?canCreate():(canCreate() && selectedStudy && selectedStudy.createdByUid===currentUser.uid && ![status.APPROVED,status.REJECTED].includes(selectedStudy.status));
+ setEditable(editable);updateActionButtons(id?selectedStudy:null,editable);openModal('studyModal');}
+function fillStudy(s){$('studyId').value=s.id;$('productName').value=s.productName||'';$('studyCategory').value=s.studyCategory||'Process Validation';$('productType').value=s.productType||'Finished Product';$('studyDate').value=s.date||'';$('stage').value=s.stage||'Raw';$('version').value=s.version||'v1.0';$('scale').value=s.scale||'Lab Scale';$('reviewerDepartment').value=s.reviewerDepartment||'';$('reason').value=s.reason||'';$('notes').value=s.notes||'';}
+function setEditable(editable){['productName','studyCategory','productType','studyDate','stage','version','scale','reviewerDepartment','reason','notes'].forEach(id=>$(id).disabled=!editable);$('uploadLabel').classList.toggle('hidden',!editable||!canUpload());$('dropzone').classList.toggle('hidden',!editable||!canUpload());}
+function updateActionButtons(s,editable){const has=s!==null;[['saveDraftBtn',editable],['submitStudyBtn',editable],['reviewAcceptBtn',has&&currentStageMatches(s.status)&&currentProfile.role!==roles.SECTION?true:has&&currentStageMatches(s.status)],['returnBtn',has&&currentStageMatches(s.status)],['approveBtn',has&&currentProfile.role===roles.QA&&s.status===status.PENDING_QA],['rejectBtn',has&&currentProfile.role===roles.QA&&s.status===status.PENDING_QA]].forEach(([id,show])=>$(id).classList.toggle('hidden',!show));
+ // Section Head and Reviewer/Deputy use Complete Review; QA uses Approve.
+ if(has && [roles.SECTION,roles.REVIEWER,roles.DEPUTY].includes(currentProfile.role) && currentStageMatches(s.status)) $('reviewAcceptBtn').classList.remove('hidden');
+ if(has && [roles.QA].includes(currentProfile.role) && s.status===status.PENDING_QA){$('reviewAcceptBtn').classList.add('hidden');$('approveBtn').classList.remove('hidden');$('rejectBtn').classList.remove('hidden');}
+ if(has && currentProfile.role===roles.ADMIN && s.status!==status.APPROVED){$('reviewAcceptBtn').classList.remove('hidden');$('returnBtn').classList.remove('hidden');}
+}
+
+$('saveDraftBtn').addEventListener('click',()=>saveStudy(status.DRAFT));$('submitStudyBtn').addEventListener('click',()=>saveStudy(stageForNext(status.DRAFT)));
+$('studyForm').addEventListener('submit',e=>{e.preventDefault();saveStudy(stageForNext(status.DRAFT))});
+async function saveStudy(targetStatus=status.DRAFT){if(!canCreate()){toast('Only Creator can create or edit studies','err');return}const id=$('studyId').value.trim();const existing=id?studies.find(s=>s.id===id):null;if(existing&&!((existing.createdByUid===currentUser.uid)||currentProfile.role===roles.ADMIN)){toast('You can only edit your own studies','err');return}
+ const base={productName:$('productName').value.trim(),studyCategory:$('studyCategory').value,productType:$('productType').value,date:$('studyDate').value,stage:$('stage').value,version:$('version').value.trim(),scale:$('scale').value,reviewerDepartment:$('reviewerDepartment').value.trim(),reason:$('reason').value.trim(),notes:$('notes').value.trim()};if(!base.productName||!base.reason){toast('Complete required fields','err');return}
+ try{let study;if(existing){study={...existing,...base,status:targetStatus,updatedAt:nowIso()};await setDoc(refDoc('records',id),study);await logAction(targetStatus===status.DRAFT?'SAVE_DRAFT':'RESUBMIT_STUDY',study,`Status: ${existing.status} → ${targetStatus}`);}else{const newId=crypto.randomUUID();study={...base,id:newId,status:targetStatus,createdByUid:currentUser.uid,createdBy:currentProfile.displayName||currentProfile.email,createdAt:nowIso(),updatedAt:nowIso()};await setDoc(refDoc('records',newId),study);await logAction('CREATE_STUDY',study,`Created with status ${targetStatus}`)}
+ await uploadPendingFiles(study);await logAction(targetStatus===status.DRAFT?'SAVE_DRAFT':'SUBMIT_STUDY',study,`Files pending: ${pendingFiles.length}`);pendingFiles=[];closeModal('studyModal');toast(targetStatus===status.DRAFT?'Draft saved':'Study submitted for Section Head review');}
+ catch(e){console.error(e);toast(e.message||'Could not save study','err')}}
+
+$('fileInput').addEventListener('change',e=>queueFiles([...e.target.files]));['dragenter','dragover'].forEach(ev=>$('dropzone').addEventListener(ev,e=>{e.preventDefault();$('dropzone').classList.add('drag')}));['dragleave','drop'].forEach(ev=>$('dropzone').addEventListener(ev,e=>{e.preventDefault();$('dropzone').classList.remove('drag')}));$('dropzone').addEventListener('drop',e=>queueFiles([...e.dataTransfer.files]));
+function queueFiles(files){for(const f of files){if(!ALLOWED_FILES.includes(f.type)){toast(`Unsupported file: ${f.name}`,'err');continue}if(f.size>MAX_FILE_SIZE){toast(`File too large: ${f.name}`,'err');continue}pendingFiles.push(f)}renderDocumentList();}
+function renderDocumentList(docs=[]){const merged=[...docs.map(d=>({existing:true,...d})),...pendingFiles.map(f=>({pending:true,name:f.name,size:f.size,type:f.type}))];$('documentList').innerHTML=merged.length?merged.map(d=>`<div class="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-200"><div class="min-w-0"><div class="font-semibold text-sm truncate"><i class="fa-regular fa-file-lines mr-2 text-slate-500"></i>${esc(d.name)}</div><div class="text-xs text-slate-500">${esc(d.type||'')} • ${formatBytes(d.size||0)} ${d.version?`• ${esc(d.version)}`:''}</div></div><div>${d.url?`<a href="${esc(d.url)}" target="_blank" class="text-blue-600 text-sm font-semibold mr-2" onclick="window.__logDownload('${esc(d.studyId||$('studyId').value)}','${esc(d.name)}')">View</a>`:''}${d.pending?'<span class="text-xs text-emerald-600 font-semibold">Ready to upload</span>':''}</div></div>`).join(''):'<div class="text-sm text-slate-400">No documents uploaded.</div>'}
+window.__logDownload=async(id,name)=>{const s=studies.find(x=>x.id===id);await logAction('DOWNLOAD_DOCUMENT',s,`Downloaded ${name}`)};
+function formatBytes(n){if(!n)return '0 B';const u=['B','KB','MB','GB'];let i=0,v=n;while(v>=1024&&i<u.length-1){v/=1024;i++}return `${v.toFixed(i?1:0)} ${u[i]}`}
+async function uploadPendingFiles(study){if(!pendingFiles.length)return;for(const file of pendingFiles){const path=`studies/${study.id}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g,'_')}`;const r=ref(storage,path);await new Promise((resolve,reject)=>{const task=uploadBytesResumable(r,file,{contentType:file.type});task.on('state_changed',()=>{},reject,async()=>{try{const url=await getDownloadURL(task.snapshot.ref);const meta={studyId:study.id,name:file.name,size:file.size,type:file.type,storagePath:path,url,uploadedByUid:currentUser.uid,uploadedBy:currentProfile.displayName||currentProfile.email,uploadedAt:nowIso(),version:study.version};await addDoc(col('documents'),meta);await logAction('UPLOAD_DOCUMENT',study,`Uploaded ${file.name} (${formatBytes(file.size)})`);resolve()}catch(e){reject(e)}})});}}
+
+async function loadDocuments(studyId){try{const snap=await getDocs(query(col('documents'),where('studyId','==',studyId)));renderDocumentList(snap.docs.map(d=>({id:d.id,...d.data()})));}catch(e){console.warn(e);renderDocumentList([])}}
+async function loadReviews(studyId){try{const snap=await getDocs(query(col('reviews'),where('studyId','==',studyId),orderBy('createdAt','desc')));const arr=snap.docs.map(d=>({id:d.id,...d.data()}));$('reviewHistory').innerHTML=arr.length?arr.map(r=>`<div class="p-3 rounded-lg border ${r.type==='RETURN'?'border-amber-200 bg-amber-50':r.type==='REJECT'?'border-red-200 bg-red-50':'border-slate-200 bg-slate-50'}"><div class="flex justify-between gap-3"><div class="font-semibold text-sm">${esc(r.user)} <span class="text-xs text-slate-500">(${esc(r.role)})</span></div><div class="text-xs text-slate-500">${new Date(r.clientTime||Date.now()).toLocaleString()}</div></div><div class="mt-1 text-sm whitespace-pre-wrap">${esc(r.comment)}</div><div class="mt-1 text-[11px] font-bold uppercase text-slate-500">${esc(r.type)}</div></div>`).join(''):'<div class="text-sm text-slate-400">No review comments yet.</div>'}catch(e){$('reviewHistory').innerHTML='<div class="text-sm text-red-500">Could not load review history.</div>'}}
+
+function openComment(mode,study){pendingAction={mode,study};$('commentInput').value='';$('commentModalTitle').textContent=mode==='RETURN'?'Return Study to Creator':mode==='REJECT'?'Reject Study':'Review Comment';$('commentModalHint').textContent=mode==='RETURN'?'A comment is required. The creator will see it and can revise/resubmit.':mode==='REJECT'?'A rejection reason is required.':'You may add an observation or review comment.';$('commentRequired').classList.add('hidden');openModal('commentModal')}
+$('commentConfirmBtn').addEventListener('click',async()=>{if(!pendingAction)return;const c=$('commentInput').value.trim();const required=['RETURN','REJECT'].includes(pendingAction.mode);if(required&&!c){$('commentRequired').classList.remove('hidden');return}try{const s=pendingAction.study;const mode=pendingAction.mode;if(mode==='RETURN'){await transition(s,status.RETURNED);await addReview(s,'RETURN',c||'Returned for revision');}else if(mode==='REJECT'){await transition(s,status.REJECTED);await addReview(s,'REJECT',c); }else{await addReview(s,'COMMENT',c||'Review completed');await transition(s,stageForNext(s.status));}closeModal('commentModal');closeModal('studyModal');pendingAction=null;toast('Action completed');}catch(e){toast(e.message||'Action failed','err')}});
+async function addReview(study,type,comment){const review={studyId:study.id,type,comment,userUid:currentUser.uid,user:currentProfile.displayName||currentProfile.email,role:currentProfile.role,department:currentProfile.department||'',clientTime:nowIso(),createdAt:serverTimestamp()};await addDoc(col('reviews'),review);await logAction(type==='COMMENT'?'ADD_REVIEW_COMMENT':type==='RETURN'?'RETURN_STUDY':'REJECT_STUDY',study,comment||type)}
+async function transition(study,target){const before=study.status;const updates={status:target,updatedAt:nowIso()};if(target===status.RETURNED){updates.returnedBy=currentProfile.displayName||currentProfile.email;updates.returnedByRole=currentProfile.role;updates.returnedAt=nowIso()}if(target===status.APPROVED){updates.approvedBy=currentProfile.displayName||currentProfile.email;updates.approvedByRole=currentProfile.role;updates.approvedAt=nowIso()}if(target===status.REJECTED){updates.rejectedBy=currentProfile.displayName||currentProfile.email;updates.rejectedAt=nowIso()}await updateDoc(refDoc('records',study.id),updates);await logAction('STATUS_CHANGE',study,`${before} → ${target}`)}
+$('reviewAcceptBtn').addEventListener('click',()=>{const s=selectedStudy; if(!s)return;if([roles.SECTION,roles.REVIEWER,roles.DEPUTY].includes(currentProfile.role))openComment('COMMENT',s);else transition(s,stageForNext(s.status)).then(()=>{closeModal('studyModal');toast('Workflow advanced')}).catch(e=>toast(e.message,'err'))});
+$('returnBtn').addEventListener('click',()=>selectedStudy&&openComment('RETURN',selectedStudy));$('rejectBtn').addEventListener('click',()=>selectedStudy&&openComment('REJECT',selectedStudy));
+$('approveBtn').addEventListener('click',async()=>{if(!selectedStudy)return;try{await transition(selectedStudy,status.APPROVED);await addReview(selectedStudy,'COMMENT','Final QA approval');closeModal('studyModal');toast('Study approved')}catch(e){toast(e.message,'err')}});
+
+function renderStudies(){const q=$('searchInput').value.toLowerCase();const c=$('categoryFilter').value,s=$('statusFilter').value;const data=visibleStudies().filter(x=>(!q||`${x.productName} ${x.productType} ${x.id}`.toLowerCase().includes(q))&&(c==='All'||x.studyCategory===c)&&(s==='All'||x.status===s)).sort((a,b)=>String(b.updatedAt||b.createdAt).localeCompare(String(a.updatedAt||a.createdAt)));$('studyTable').innerHTML=data.map(x=>{let actions=`<button class="text-blue-600 font-semibold text-sm" onclick="window.__openStudy('${x.id}')">Open</button>`;if(canCreate()&&x.createdByUid===currentUser.uid&&!['Approved','Rejected'].includes(x.status))actions+=`<button class="text-slate-700 font-semibold text-sm ml-3" onclick="window.__editStudy('${x.id}')">Edit</button>`;return `<tr class="hover:bg-slate-50"><td class="px-4 py-4"><div class="font-semibold">${esc(x.productName)}</div><div class="text-xs text-slate-500">${esc(x.productType)} • ${esc(x.version||'')}</div></td><td class="px-4 py-4 text-sm">${esc(x.studyCategory)}</td><td class="px-4 py-4 text-sm">${esc(x.createdBy||'')}</td><td class="px-4 py-4">${pill(x.status)}</td><td class="px-4 py-4 text-xs text-slate-500">${x.updatedAt?new Date(x.updatedAt).toLocaleString():''}</td><td class="px-4 py-4 text-right whitespace-nowrap">${actions}</td></tr>`}).join('');$('emptyState').classList.toggle('hidden',data.length>0)}
+window.__openStudy=id=>openStudyForm(id);window.__editStudy=id=>openStudyForm(id);
+
+function renderAudit(){const arr=[...auditLogs].sort((a,b)=>(b.sortTime||0)-(a.sortTime||0));$('auditTable').innerHTML=arr.map(a=>`<tr><td class="px-3 py-2 text-xs whitespace-nowrap">${a.timestamp?.seconds?new Date(a.timestamp.seconds*1000).toLocaleString():a.timestampText||''}</td><td class="px-3 py-2 text-xs"><div class="font-semibold">${esc(a.user)}</div><div class="text-slate-500">${esc(a.role)}</div></td><td class="px-3 py-2 text-xs"><span class="px-2 py-1 rounded bg-slate-100 font-semibold">${esc(a.action)}</span></td><td class="px-3 py-2 text-xs">${esc(a.product||a.studyId||'')}</td><td class="px-3 py-2 text-xs text-slate-600 max-w-xl">${esc(a.details)}</td></tr>`).join('')}
+function renderUsers(){$('userTable').innerHTML=users.map(u=>`<tr><td class="px-3 py-2 text-sm font-semibold">${esc(u.displayName||'')}</td><td class="px-3 py-2 text-sm">${esc(u.email||'')}</td><td class="px-3 py-2 text-sm">${pill(u.role)}</td><td class="px-3 py-2 text-sm">${esc(u.department||'')}</td><td class="px-3 py-2 text-sm">${u.active!==false?'Yes':'No'}</td></tr>`).join('')}
+$('userForm').addEventListener('submit',async e=>{e.preventDefault();if(currentProfile.role!==roles.ADMIN){toast('Administrator only','err');return}const email=$('newUserEmail').value.trim(),name=$('newUserName').value.trim(),role=$('newUserRole').value,dept=$('newUserDepartment').value.trim();const tmp=initializeApp(firebaseConfig,'secondary-'+Date.now());const a=getAuth(tmp);try{const cred=await createUserWithEmailAndPassword(a,email,crypto.randomUUID().slice(0,12)+'Aa1!');const profile={uid:cred.user.uid,email,displayName:name,role,department:dept,active:true,createdAt:nowIso()};await setDoc(refDoc('users',cred.user.uid),profile);await sendPasswordResetEmail(a,email);await signOut(a);$('userForm').reset();toast(`User created. A password-reset email was sent to ${email}.`);await logAction('CREATE_USER',null,`${email} assigned ${role}`);}catch(err){toast(err.message||'Could not create user','err')}});
+
+function subscribeData(){onSnapshot(query(col('records'),orderBy('updatedAt','desc')),snap=>{studies=snap.docs.map(d=>({id:d.id,...d.data()}));renderStudies()},e=>console.error('records',e));onSnapshot(col('users'),snap=>{users=snap.docs.map(d=>({id:d.id,...d.data()}));if(currentProfile?.role===roles.ADMIN)renderUsers()},e=>console.error('users',e));onSnapshot(query(col('audit'),orderBy('sortTime','desc')),snap=>{auditLogs=snap.docs.map(d=>({id:d.id,...d.data()}));if(!$('auditModal').classList.contains('hidden'))renderAudit()},e=>console.error('audit',e));}
+
+async function hydrateProfile(user){const snap=await getDoc(refDoc('users',user.uid));if(!snap.exists())throw new Error('Your account exists in Firebase Authentication but no ValidApp role profile was found. Ask an Administrator to create/assign your user profile.');const p={uid:user.uid,...snap.data()};if(p.active===false)throw new Error('Your ValidApp account is inactive.');return p}
+onAuthStateChanged(auth,async user=>{if(!user){currentUser=null;currentProfile=null;$('loginView').classList.remove('hidden');$('appView').classList.add('hidden');$('sessionArea').classList.add('hidden');return}try{currentUser=user;currentProfile=await hydrateProfile(user);$('loginView').classList.add('hidden');$('appView').classList.remove('hidden');$('sessionArea').classList.remove('hidden');$('sessionArea').classList.add('flex');$('userName').textContent=currentProfile.displayName||currentProfile.email;$('userRole').textContent=`${currentProfile.role}${currentProfile.department?` • ${currentProfile.department}`:''}`;$('newStudyBtn').classList.toggle('hidden',!canCreate());$('auditBtn').classList.toggle('hidden',!isApprovalRole()&&!canCreate());$('usersBtn').classList.toggle('hidden',currentProfile.role!==roles.ADMIN);$('scopeText').textContent=currentProfile.role===roles.CREATOR?'You see studies you created. Creator can upload and replace documents.':'You see studies allowed by your workflow role.';subscribeData();await logAction('LOGIN',null,`Signed in as ${currentProfile.role}`);renderStudies();}catch(e){await signOut(auth);$('loginError').textContent=e.message;$('loginError').classList.remove('hidden')}});
+
+// Keep selected study synchronized with live data when modal is open.
+setInterval(()=>{if(selectedStudy){const fresh=studies.find(s=>s.id===selectedStudy.id);if(fresh&&fresh.updatedAt!==selectedStudy.updatedAt){selectedStudy=fresh;updateActionButtons(selectedStudy,false)} }},1500);
+</script>
+</body></html>
