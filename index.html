@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ValidApp - Validation & Quality Workflow</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+  <script type="module">
+    import { initializeApp, getApps, deleteApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, query, where, orderBy, limit, serverTimestamp, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    import { getStorage, ref, uploadBytesResumable, getBlob, deleteObject } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
+
+    const MY_FIREBASE_CONFIG = {
+      apiKey: "AIzaSyDEV8rEluViDZiA5nnv7BiIU78rgq5en8A",
+      authDomain: "validapp-db.firebaseapp.com",
+      projectId: "validapp-db",
+      storageBucket: "validapp-db.firebasestorage.app",
+      messagingSenderId: "702664233017",
+      appId: "1:702664233017:web:25fbede2f3c7244cdbfde8",
+      measurementId: "G-7FTDYP0XWS"
+    };
+
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : MY_FIREBASE_CONFIG;
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'validapp-default';
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const storage = getStorage(app);
+
+    const ROLES = Object.freeze({
+      ADMIN: 'Administrator',
+      CREATOR: 'Creator',
+      SECTION_HEAD: 'Section Head',
+      DEPUTY: 'Deputy QA Manager',
+      QA_MANAGER: 'QA Manager',
+      REVIEWER: 'Reviewer — Other Department',
+      VIEWER: 'Viewer'
+    });
+
+    const ROLE_LIST = Object.values(ROLES);
+    const STATUS = Object.freeze({
+      DRAFT: 'Draft',
+      PENDING_SECTION_HEAD: 'Pending Section Head',
+      PENDING_REVIEWER: 'Pending Reviewer',
+      PENDING_DEPUTY: 'Pending Deputy QA',
+      PENDING_QA: 'Pending QA Manager',
+      RETURNED: 'Returned for Revision',
+      APPROVED: 'Approved',
+      REJECTED: 'Rejected',
+      COMPLETED: 'Completed'
+    });
+
+    const CATEGORIES = Object.freeze({ PROCESS: 'Process Validation', HOLD_TIME: 'Hold Time Study', CLEANING: 'Cleaning Validation' });
+    const MODULES = Object.freeze({ STUDIES: 'Studies', CALIBRATION: 'Calibration', QUALIFICATION: 'Qualification' });
+    const ALLOWED_FILE_TYPES = Object.freeze({
+      'application/pdf': '.pdf',
+      'application/msword': '.doc',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+      'application/vnd.ms-excel': '.xls',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+      'image/jpeg': '.jpg/.jpeg',
+      'image/png': '.png'
+    });
+    const MAX_FILE_SIZE = 25 * 1024 * 1024;
+
+    let currentUser = null;
+    let currentProfile = null;
+    let currentModule = MODULES.STUDIES;
+    let currentCategory = CATEGORIES.PROCESS;
+    let records = [];
+    let moduleRecords = [];
+    let filesByParent = [];
+    let reviewsByParent = [];
+    let users = [];
+    let auditLogs = [];
+    let delegationActive = false;
+    let unsubscribeData = null;
+    let pendingAction = null;
+
+    const $ = id => document.getElementById(id);
+    const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const safeFileName = name => String(name).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 180);
+    const nowLabel = value => {
+      if (!value) return '—';
+      const d = value?.toDate ? value.toDate() : new Date(value);
+      return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
+    };
+    const colRef = name => collection(db, 'artifacts', appId, 'public', 'data', name);
+    const docRef = (name, id) => doc(db, 'artifacts', appId, 'public', 'data', name, id);
+
+    const can = (...roles) => !!currentProfile && roles.includes(currentProfile.role);
+    const isAdmin = () => can(ROLES.ADMIN);
+    const isCreator = () => can(ROLES.CREATOR);
+    const isReviewer = () => can(ROLES.SECTION_HEAD, ROLES.REVIEWER, ROLES.DEPUTY, ROLES.QA_MANAGER);
+    const isViewer = () => can(ROLES.VIEWER);
+
+    function showMessage(title, text, type='info') {
+      $('messageTitle').textContent = title;
+      $('messageText').textContent = text;
+      $('messageIcon').innerHTML = type === 'error' ? '<i class="fas fa-times-circle text-4xl text-red-500"></i>' : type === 'success' ? '<i class="fas fa-check-circle text-4xl text-green-500"></i>' : '<i class="fas fa-info-circle text-4xl text-blue-500"></i>';
+      $('messageModal').classList.add('active');
+    }
+    function confirmAction(title, text, callback, requireReason=false, reasonLabel='Reason / comment *') {
+      pendingAction = callback;
+      $('confirmTitle').textContent = title;
+      $('confirmText').textContent = text;
+      $('reasonLabel').textContent = reasonLabel;
+      $('reasonInput').value = '';
+      $('reasonWrap').classList.toggle('hidden', !requireReason);
+      $('confirmModal').classList.add('active');
+    }
+    function closeModals() { document.querySelectorAll('.modal').forEach(x => x.classList.remove('active')); pendingAction = null; }
+
+    function auditPayload(action, parentId='', parentName='', details='', previousStatus='', newStatus='') {
+      return {
+        userId: currentUser.uid,
+        userName: currentProfile?.displayName || currentProfile?.username || currentUser.email || currentUser.uid,
+        userRole: currentProfile?.role || 'Unknown',
+        action, studyId: parentId || null, studyName: parentName || null,
+        previousStatus: previousStatus || null, newStatus: newStatus || null,
+        details: details || '', createdAt: serverTimestamp(), clientTimestamp: new Date().toISOString()
+      };
+    }
+    async function logAudit(action, parentId='', parentName='', details='', previousStatus='', newStatus='') {
+      try { await addDoc(colRef('audit'), auditPayload(action, parentId, parentName, details, previousStatus, newStatus)); }
+      catch (e) { console.error('Audit write failed', e); }
+    }
+
+    function roleBadge(role) {
+      const cls = role === ROLES.ADMIN ? 'bg-red-100 text-red-800' : role === ROLES.QA_MANAGER ? 'bg-green-100 text-green-800' : role === ROLES.VIEWER ? 'bg-gray-100 text-gray-700' : 'bg-blue-100 text-blue-800';
+      return `<span class="px-2 py-1 rounded-full text-xs font-semibold ${cls}">${esc(role)}</span>`;
+    }
+    function statusBadge(status) {
+      const cls = status === STATUS.APPROVED || status === STATUS.COMPLETED ? 'bg-green-100 text-green-800 border-green-200' : status === STATUS.REJECTED ? 'bg-red-100 text-red-800 border-red-200' : status === STATUS.RETURNED ? 'bg-amber-100 text-amber-800 border-amber-200' : 'bg-blue-50 text-blue-800 border-blue-200';
+      return `<span class="px-2 py-1 inline-flex text-xs font-semibold rounded-full border ${cls}">${esc(status || '—')}</span>`;
+    }
+
+    function resetAppUI() {
+      $('loginSection').classList.remove('hidden');
+      $('dashboardSection').classList.add('hidden');
+      $('userInfo').classList.add('hidden');
+      $('userInfo').classList.remove('flex');
+      $('loginForm').reset();
+      $('loginError').classList.add('hidden');
+    }
+    function configureNavigation() {
+      $('userManagementBtn').classList.toggle('hidden', !isAdmin());
+      $('auditTrailBtn').classList.toggle('hidden', !can(ROLES.ADMIN, ROLES.QA_MANAGER, ROLES.DEPUTY));
+      $('calibrationNav').classList.toggle('hidden', !(isAdmin() || isCreator() || isReviewer() || isViewer()));
+      $('qualificationNav').classList.toggle('hidden', !(isAdmin() || isCreator() || isReviewer() || isViewer()));
+      $('addRecordBtn').classList.toggle('hidden', !(isAdmin() || isCreator()));
+      $('addModuleBtn').classList.toggle('hidden', !(isAdmin() || isCreator()));
+      $('currentUserDisplay').textContent = currentProfile?.displayName || currentProfile?.username || currentUser.email;
+      $('currentUserRole').textContent = currentProfile?.role || 'Unassigned';
+      $('currentUserDepartment').textContent = currentProfile?.department || '—';
+    }
+
+    async function loadProfile(user) {
+      const snap = await getDoc(docRef('users', user.uid));
+      if (!snap.exists()) throw new Error('Your Firebase Authentication account exists, but no ValidApp role profile was found. Ask an Administrator to create or map your profile.');
+      const profile = snap.data();
+      if (!profile.role || !ROLE_LIST.includes(profile.role)) throw new Error('Your ValidApp profile has an invalid role. Ask an Administrator to correct it.');
+      if (profile.disabled === true) throw new Error('Your ValidApp account is disabled. Contact an Administrator.');
+      return { id: snap.id, ...profile };
+    }
+
+    async function loadData() {
+      if (!currentProfile) return;
+      if (unsubscribeData) unsubscribeData();
+      let q;
+      try {
+        if (isAdmin()) q = query(colRef('records'), orderBy('createdAt', 'desc'));
+        else if (isCreator()) q = query(colRef('records'), where('createdByUid', '==', currentUser.uid));
+        else if (can(ROLES.SECTION_HEAD)) q = query(colRef('records'), where('status', '==', STATUS.PENDING_SECTION_HEAD));
+        else if (can(ROLES.REVIEWER)) q = query(colRef('records'), where('status', '==', STATUS.PENDING_REVIEWER));
+        else if (can(ROLES.DEPUTY)) q = query(colRef('records'), where('status', '==', STATUS.PENDING_DEPUTY));
+        else if (can(ROLES.QA_MANAGER)) q = query(colRef('records'), where('status', '==', STATUS.PENDING_QA));
+        else q = query(colRef('records'), where('status', '==', STATUS.APPROVED));
+        const snap = await getDocs(q);
+        records = snap.docs.map(d => ({id:d.id, ...d.data()}));
+        if (!records.length && isCreator() && currentProfile.username) {
+          // Backward compatibility: query legacy records by the old username field.
+          const legacy = await getDocs(query(colRef('records'), where('createdBy', '==', currentProfile.username), limit(200)));
+          records = legacy.docs.map(d => ({id:d.id, ...d.data()}));
+        }
+        records.sort((a,b) => String(b.createdAt?.seconds || b.createdAt || '').localeCompare(String(a.createdAt?.seconds || a.createdAt || '')));
+        renderStudies();
+      } catch (e) {
+        console.error(e);
+        showMessage('Data access error', 'The records could not be loaded. Check your role assignment and Firebase Security Rules.', 'error');
+      }
+    }
+
+    function recordActionButtons(r) {
+      const buttons = [];
+      const owner = r.createdByUid === currentUser?.uid || r.createdBy === currentProfile?.username;
+      if ((isAdmin() || isCreator()) && owner && [STATUS.DRAFT, STATUS.RETURNED].includes(r.status)) buttons.push(`<button class="text-purple-600 hover:text-purple-800 text-xs font-semibold" data-edit="${esc(r.id)}"><i class="fas fa-edit mr-1"></i>Edit</button>`);
+      if ((isAdmin() || isCreator()) && owner && r.status === STATUS.DRAFT) buttons.push(`<button class="text-blue-600 hover:text-blue-800 text-xs font-semibold" data-submit="${esc(r.id)}"><i class="fas fa-paper-plane mr-1"></i>Submit</button>`);
+      if (can(ROLES.SECTION_HEAD) && r.status === STATUS.PENDING_SECTION_HEAD) buttons.push(`<button class="text-blue-600 text-xs font-semibold" data-review="${esc(r.id)}"><i class="fas fa-check-circle mr-1"></i>Complete Review</button>`);
+      if (can(ROLES.REVIEWER) && r.status === STATUS.PENDING_REVIEWER) buttons.push(`<button class="text-blue-600 text-xs font-semibold" data-review="${esc(r.id)}"><i class="fas fa-check-circle mr-1"></i>Complete Review</button>`);
+      if (can(ROLES.DEPUTY) && r.status === STATUS.PENDING_DEPUTY) buttons.push(`<button class="text-blue-600 text-xs font-semibold" data-review="${esc(r.id)}"><i class="fas fa-check-circle mr-1"></i>Complete Review</button>`);
+      if (can(ROLES.QA_MANAGER) && r.status === STATUS.PENDING_QA) buttons.push(`<button class="text-green-600 text-xs font-semibold" data-approve="${esc(r.id)}"><i class="fas fa-thumbs-up mr-1"></i>Approve</button>`);
+      if (isReviewer() && ![STATUS.APPROVED, STATUS.REJECTED].includes(r.status)) buttons.push(`<button class="text-amber-600 text-xs font-semibold" data-return="${esc(r.id)}"><i class="fas fa-undo mr-1"></i>Return</button>`);
+      if (can(ROLES.QA_MANAGER) && r.status === STATUS.PENDING_QA) buttons.push(`<button class="text-red-600 text-xs font-semibold" data-reject="${esc(r.id)}"><i class="fas fa-ban mr-1"></i>Reject</button>`);
+      buttons.push(`<button class="text-gray-600 text-xs font-semibold" data-files="${esc(r.id)}"><i class="fas fa-paperclip mr-1"></i>Files</button>`);
+      buttons.push(`<button class="text-gray-600 text-xs font-semibold" data-history="${esc(r.id)}"><i class="fas fa-history mr-1"></i>History</button>`);
+      return buttons.join(' ');
+    }
+
+    function renderStudies() {
+      const q = $('searchInput').value.trim().toLowerCase();
+      const stage = $('filterStage').value;
+      const status = $('filterStatus').value;
+      const scale = $('filterScale').value;
+      const category = currentCategory;
+      const filtered = records.filter(r => r.studyCategory === category && (!q || `${r.productName||''} ${r.productType||''}`.toLowerCase().includes(q)) && (stage === 'All' || r.stage === stage) && (status === 'All' || r.status === status) && (scale === 'All' || r.scale === scale));
+      $('dataTableBody').innerHTML = filtered.map(r => `<tr class="hover:bg-gray-50">
+        <td class="px-4 py-3 font-medium text-gray-900">${esc(r.productName)}<div class="text-xs text-gray-500">${esc(r.productType)}</div></td>
+        <td class="px-4 py-3 text-xs">${esc(r.studyCategory)}</td>
+        <td class="px-4 py-3 text-xs">${esc(r.date || r.studyDate)}<div class="font-semibold mt-1">${esc(r.stage)}</div></td>
+        <td class="px-4 py-3 text-xs">${esc(r.scale)}<div class="mt-1"><span class="bg-blue-100 text-blue-800 px-1 rounded">${esc(r.version)}</span></div></td>
+        <td class="px-4 py-3 text-xs max-w-[220px] truncate" title="${esc(r.reason)}">${esc(r.reason)}<div class="text-gray-400 truncate">${esc(r.notes || '')}</div></td>
+        <td class="px-4 py-3 whitespace-nowrap">${statusBadge(r.status)}<div class="text-[10px] text-gray-500 mt-1">Created: ${esc(r.createdByName || r.createdBy || '—')}</div></td>
+        <td class="px-4 py-3 text-center"><div class="flex flex-wrap justify-center gap-2">${recordActionButtons(r)}</div></td>
+      </tr>`).join('');
+      $('emptyState').classList.toggle('hidden', filtered.length !== 0);
+    }
+
+    function openRecordModal(record=null) {
+      $('recordForm').reset(); $('recordId').value = record?.id || '';
+      $('modalTitle').textContent = record ? 'Edit Validation Study' : 'Add New Validation Study';
+      $('studyCategory').value = record?.studyCategory || currentCategory;
+      $('studyStatus').value = record?.status || STATUS.DRAFT;
+      $('productName').value = record?.productName || '';
+      $('productType').value = record?.productType || 'Finished Product';
+      $('studyDate').value = record?.date || '';
+      $('stage').value = record?.stage || 'Raw';
+      $('version').value = record?.version || 'v1.0';
+      $('scale').value = record?.scale || 'Lab Scale';
+      $('reason').value = record?.reason || '';
+      $('notes').value = record?.notes || '';
+      $('reviewerDepartment').value = record?.reviewerDepartment || '';
+      $('requireOtherDeptReview').checked = !!record?.requireOtherDeptReview;
+      $('recordModal').classList.add('active');
+    }
+
+    async function saveStudy(e) {
+      e.preventDefault();
+      if (!(isAdmin() || isCreator())) return showMessage('Unauthorized', 'You are not permitted to create or edit studies.', 'error');
+      const id = $('recordId').value;
+      const existing = records.find(r => r.id === id);
+      if (existing && !(existing.createdByUid === currentUser.uid || existing.createdBy === currentProfile.username || isAdmin())) return showMessage('Unauthorized', 'You may only edit your own editable study.', 'error');
+      if (existing && [STATUS.APPROVED, STATUS.REJECTED, STATUS.COMPLETED].includes(existing.status)) return showMessage('Protected record', 'Approved/rejected/completed records cannot be edited.', 'error');
+      const data = {
+        productName: $('productName').value.trim(), studyCategory: $('studyCategory').value, productType: $('productType').value,
+        date: $('studyDate').value, stage: $('stage').value, version: $('version').value.trim(), scale: $('scale').value,
+        reason: $('reason').value.trim(), notes: $('notes').value.trim(), reviewerDepartment: $('reviewerDepartment').value.trim(),
+        requireOtherDeptReview: $('requireOtherDeptReview').checked,
+        updatedAt: serverTimestamp()
+      };
+      if (!data.productName || !data.date || !data.reason || !data.version) return showMessage('Missing required fields', 'Please complete all required study fields.', 'error');
+      try {
+        if (id) {
+          const newData = {...data};
+          if (existing?.status === STATUS.RETURNED) newData.status = STATUS.RETURNED;
+          await updateDoc(docRef('records', id), newData);
+          await logAudit('Study Modified', id, data.productName, 'Study information updated.');
+          showMessage('Success', 'Study updated successfully.', 'success');
+        } else {
+          const payload = {...data, status: STATUS.DRAFT, createdByUid: currentUser.uid, createdByName: currentProfile.displayName || currentProfile.username || currentUser.email, createdBy: currentProfile.username || currentProfile.displayName || currentUser.email, createdAt: serverTimestamp()};
+          const refDoc = await addDoc(colRef('records'), payload);
+          await logAudit('Study Created', refDoc.id, data.productName, 'New validation study created.', '', STATUS.DRAFT);
+          showMessage('Success', 'New validation study created as Draft.', 'success');
+        }
+        closeModals(); await loadData();
+      } catch (err) { console.error(err); showMessage('Save failed', friendlyError(err), 'error'); }
+    }
+
+    function nextStatusForReview(r) {
+      if (r.status === STATUS.PENDING_SECTION_HEAD) return r.requireOtherDeptReview ? STATUS.PENDING_REVIEWER : STATUS.PENDING_DEPUTY;
+      if (r.status === STATUS.PENDING_REVIEWER) return STATUS.PENDING_DEPUTY;
+      if (r.status === STATUS.PENDING_DEPUTY) return STATUS.PENDING_QA;
+      return null;
+    }
+
+    async function updateWorkflow(id, targetStatus, comment='') {
+      const r = records.find(x => x.id === id); if (!r) throw new Error('Study not found.');
+      const old = r.status;
+      const actorRole = currentProfile.role;
+      const permitted =
+        (actorRole === ROLES.SECTION_HEAD && old === STATUS.PENDING_SECTION_HEAD && [STATUS.PENDING_REVIEWER, STATUS.PENDING_DEPUTY].includes(targetStatus)) ||
+        (actorRole === ROLES.REVIEWER && old === STATUS.PENDING_REVIEWER && targetStatus === STATUS.PENDING_DEPUTY) ||
+        (actorRole === ROLES.DEPUTY && old === STATUS.PENDING_DEPUTY && targetStatus === STATUS.PENDING_QA) ||
+        (actorRole === ROLES.QA_MANAGER && old === STATUS.PENDING_QA && [STATUS.APPROVED, STATUS.REJECTED].includes(targetStatus)) ||
+        (actorRole === ROLES.ADMIN);
+      if (!permitted) throw new Error('Invalid workflow transition for your role.');
+      const updates = {status: targetStatus, updatedAt: serverTimestamp(), lastActionByUid: currentUser.uid, lastActionByName: currentProfile.displayName || currentProfile.username || currentUser.email, lastActionRole: actorRole};
+      if (targetStatus === STATUS.APPROVED) { updates.approvedByUid = currentUser.uid; updates.approvedByName = currentProfile.displayName || currentProfile.username; updates.approvedAt = serverTimestamp(); }
+      if (targetStatus === STATUS.REJECTED) { updates.rejectedByUid = currentUser.uid; updates.rejectedByName = currentProfile.displayName || currentProfile.username; updates.rejectedAt = serverTimestamp(); updates.rejectionReason = comment; }
+      await updateDoc(docRef('records', id), updates);
+      await addDoc(colRef('reviews'), {studyId:id, studyName:r.productName, reviewerUid:currentUser.uid, reviewerName:currentProfile.displayName || currentProfile.username || currentUser.email, reviewerRole:actorRole, department:currentProfile.department || '', stage:old, action: targetStatus === STATUS.REJECTED ? 'Rejected' : 'Review Completed', comment:comment || '', createdAt:serverTimestamp()});
+      await logAudit(targetStatus === STATUS.REJECTED ? 'Study Rejected' : targetStatus === STATUS.APPROVED ? 'Study Approved' : 'Workflow Progressed', id, r.productName, comment || `Workflow progressed by ${actorRole}.`, old, targetStatus);
+      await loadData();
+    }
+
+    async function returnStudy(id) {
+      const r = records.find(x=>x.id===id); if (!r) return;
+      if (![ROLES.SECTION_HEAD, ROLES.REVIEWER, ROLES.DEPUTY, ROLES.QA_MANAGER].includes(currentProfile.role) && !isAdmin()) return showMessage('Unauthorized','You cannot return this study.','error');
+      confirmAction('Return for Revision', `Return "${r.productName}" to the Creator? A documented reason is mandatory.`, async reason => {
+        if (!reason.trim()) return showMessage('Comment required','A return reason is mandatory.','error');
+        try {
+          await updateDoc(docRef('records', id), {status:STATUS.RETURNED, updatedAt:serverTimestamp(), returnedByUid:currentUser.uid, returnedByName:currentProfile.displayName || currentProfile.username, returnedByRole:currentProfile.role, returnedAt:serverTimestamp()});
+          await addDoc(colRef('reviews'), {studyId:id, studyName:r.productName, reviewerUid:currentUser.uid, reviewerName:currentProfile.displayName || currentProfile.username || currentUser.email, reviewerRole:currentProfile.role, department:currentProfile.department || '', stage:r.status, action:'Returned for Revision', comment:reason.trim(), createdAt:serverTimestamp()});
+          await logAudit('Study Returned for Revision', id, r.productName, reason.trim(), r.status, STATUS.RETURNED);
+          closeModals(); showMessage('Returned','The study was returned to the Creator with the documented reason.','success'); await loadData();
+        } catch(e){ showMessage('Return failed', friendlyError(e),'error'); }
+      }, true, 'Return reason / required comment *');
+    }
+
+    async function submitStudy(id) {
+      const r = records.find(x=>x.id===id); if (!r) return;
+      if (!(isAdmin() || isCreator()) || !(r.createdByUid===currentUser.uid || r.createdBy===currentProfile.username || isAdmin())) return showMessage('Unauthorized','You may only submit your own study.','error');
+      const target = r.requireOtherDeptReview ? STATUS.PENDING_SECTION_HEAD : STATUS.PENDING_SECTION_HEAD;
+      try { await updateDoc(docRef('records',id),{status:target,submittedAt:serverTimestamp(),updatedAt:serverTimestamp()}); await logAudit('Study Submitted',id,r.productName,'Study submitted for controlled review.',r.status,target); showMessage('Submitted','Study submitted to Section Head.','success'); await loadData(); }
+      catch(e){showMessage('Submission failed',friendlyError(e),'error');}
+    }
+
+    async function resubmitReturned(id) {
+      const r = records.find(x=>x.id===id); if(!r) return;
+      if (r.status !== STATUS.RETURNED || !(r.createdByUid===currentUser.uid || r.createdBy===currentProfile.username)) return;
+      try { await updateDoc(docRef('records',id),{status:STATUS.PENDING_SECTION_HEAD,resubmittedAt:serverTimestamp(),updatedAt:serverTimestamp()}); await logAudit('Study Resubmitted',id,r.productName,'Returned study corrected and resubmitted.',STATUS.RETURNED,STATUS.PENDING_SECTION_HEAD); showMessage('Resubmitted','The corrected study was resubmitted to Section Head.','success'); await loadData(); }
+      catch(e){showMessage('Resubmission failed',friendlyError(e),'error');}
+    }
+
+    function friendlyError(e) {
+      const code = e?.code || '';
+      if (code.includes('permission-denied')) return 'You are not authorized to perform this action.';
+      if (code.includes('network')) return 'Network connection failed. Please try again.';
+      if (code.includes('invalid-argument')) return 'The submitted data is invalid.';
+      if (code.includes('storage/unauthorized')) return 'You are not authorized to access this file.';
+      if (code.includes('storage/quota-exceeded')) return 'Storage quota was exceeded.';
+      return e?.message || 'An unexpected error occurred.';
+    }
+
+    async function loadFiles(parentId, module='study') {
+      const field = module === 'study' ? 'studyId' : 'parentId';
+      const snap = await getDocs(query(colRef('studyFiles'), where(field,'==',parentId)));
+      filesByParent = snap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(b.createdAt?.seconds||'').localeCompare(String(a.createdAt?.seconds||'')));
+    }
+    function fileTypeAllowed(file) { return !!ALLOWED_FILE_TYPES[file.type] && file.size <= MAX_FILE_SIZE; }
+    async function uploadFiles(parentId, input, module='study') {
+      if (!input.files.length) return;
+      if (!(isAdmin() || isCreator() || isReviewer())) return showMessage('Unauthorized','You are not permitted to upload documents.','error');
+      const files = [...input.files];
+      for (const file of files) {
+        if (!fileTypeAllowed(file)) { showMessage('Invalid file', `${file.name}: only PDF, DOC, DOCX, XLS, XLSX, JPG/JPEG and PNG files up to 25 MB are allowed.`,'error'); continue; }
+        const fileId = crypto.randomUUID();
+        const path = `artifacts/${appId}/${module}/${parentId}/${fileId}_${safeFileName(file.name)}`;
+        try {
+          const storageRef = ref(storage, path);
+          const task = uploadBytesResumable(storageRef, file, {contentType:file.type, customMetadata:{parentId,module,uploadedByUid:currentUser.uid}});
+          await new Promise((resolve,reject)=>{ task.on('state_changed', snap=>{ const pct=Math.round(snap.bytesTransferred/snap.totalBytes*100); $('uploadProgress').textContent=`Uploading ${esc(file.name)} — ${pct}%`; }, reject, resolve); });
+          await addDoc(colRef('studyFiles'), {parentId, studyId:module==='study'?parentId:null, module, name:file.name, contentType:file.type, size:file.size, storagePath:path, uploadedByUid:currentUser.uid, uploadedByName:currentProfile.displayName || currentProfile.username || currentUser.email, uploadedAt:serverTimestamp(), version:1});
+          await logAudit('File Uploaded',parentId,'',`${file.name} (${file.type}, ${file.size} bytes)`);
+        } catch(e) { console.error(e); showMessage('Upload failed',`${file.name}: ${friendlyError(e)}`,'error'); }
+      }
+      $('uploadProgress').textContent=''; await loadFiles(parentId,module); renderFileList(parentId,module);
+    }
+    async function viewFile(file, download=false) {
+      try {
+        const blob = await getBlob(ref(storage,file.storagePath));
+        const url = URL.createObjectURL(blob);
+        if (download) { const a=document.createElement('a'); a.href=url; a.download=file.name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),60000); }
+        else { window.open(url,'_blank','noopener'); setTimeout(()=>URL.revokeObjectURL(url),60000); }
+        await logAudit(download?'File Downloaded':'File Viewed',file.parentId || file.studyId,'',file.name);
+      } catch(e) { showMessage('File access denied',friendlyError(e),'error'); }
+    }
+    async function deleteFile(file) {
+      if (!isAdmin()) return showMessage('Unauthorized','Only an Administrator may delete a file, and deletion is intended only for an erroneous upload before record finalization.','error');
+      confirmAction('Delete file',`Delete "${file.name}"? This action is recorded in the audit trail.`,async()=>{
+        try { await deleteObject(ref(storage,file.storagePath)); await updateDoc(docRef('studyFiles',file.id),{deletedAt:serverTimestamp(),deletedByUid:currentUser.uid,deletedByName:currentProfile.displayName || currentProfile.username}); await logAudit('File Deleted',file.parentId || file.studyId,'',file.name); await loadFiles(file.parentId || file.studyId,file.module); renderFileList(file.parentId || file.studyId,file.module); showMessage('Deleted','File marked deleted and removed from active access.','success'); }
+        catch(e){showMessage('Delete failed',friendlyError(e),'error');}
+      });
+    }
+    function renderFileList(parentId,module='study') {
+      $('fileList').innerHTML = filesByParent.filter(f=>!f.deletedAt).map(f=>`<div class="border rounded-lg p-3 flex flex-wrap items-center justify-between gap-3 bg-gray-50"><div><div class="font-semibold text-sm">${esc(f.name)}</div><div class="text-xs text-gray-500">${esc(f.contentType)} · ${(f.size/1024/1024).toFixed(2)} MB · Uploaded ${esc(nowLabel(f.uploadedAt))} by ${esc(f.uploadedByName)}</div></div><div class="flex gap-2"><button data-view-file="${esc(f.id)}" class="text-blue-600 text-xs font-semibold">View</button><button data-download-file="${esc(f.id)}" class="text-gray-700 text-xs font-semibold">Download</button>${isAdmin()?`<button data-delete-file="${esc(f.id)}" class="text-red-600 text-xs font-semibold">Delete</button>`:''}</div></div>`).join('') || '<div class="text-sm text-gray-500">No active documents.</div>';
+      $('fileParentId').value=parentId; $('fileModule').value=module;
+      $('fileModal').classList.add('active');
+    }
+    async function openFiles(parentId,module='study') { await loadFiles(parentId,module); renderFileList(parentId,module); }
+
+    async function showHistory(studyId) {
+      const snap = await getDocs(query(colRef('reviews'),where('studyId','==',studyId)));
+      const items=snap.docs.map(d=>d.data()).sort((a,b)=>String(b.createdAt?.seconds||'').localeCompare(String(a.createdAt?.seconds||'')));
+      $('historyBody').innerHTML=items.map(x=>`<div class="border-l-4 border-blue-300 pl-4 py-2"><div class="font-semibold text-sm">${esc(x.action)} — ${esc(x.reviewerRole)}</div><div class="text-xs text-gray-500">${esc(x.reviewerName)} · ${esc(x.department||'')} · ${esc(nowLabel(x.createdAt))}</div><div class="text-sm mt-1 whitespace-pre-wrap">${esc(x.comment||'No comment recorded.')}</div></div>`).join('') || '<div class="text-sm text-gray-500">No review history recorded.</div>';
+      $('historyModal').classList.add('active');
+    }
+
+    function renderAudit() {
+      $('auditTableBody').innerHTML=auditLogs.map(x=>`<tr><td class="px-3 py-2 text-xs">${esc(nowLabel(x.createdAt))}</td><td class="px-3 py-2 text-xs">${esc(x.userName)}<div class="text-gray-500">${esc(x.userRole)}</div></td><td class="px-3 py-2 text-xs font-semibold">${esc(x.action)}</td><td class="px-3 py-2 text-xs">${esc(x.studyName||x.studyId||'—')}</td><td class="px-3 py-2 text-xs">${esc(x.previousStatus||'—')} → ${esc(x.newStatus||'—')}<div>${esc(x.details||'')}</div></td></tr>`).join('');
+    }
+    async function loadAudit() { const snap=await getDocs(query(colRef('audit'),orderBy('createdAt','desc'),limit(500))); auditLogs=snap.docs.map(d=>({id:d.id,...d.data()})); renderAudit(); $('auditModal').classList.add('active'); }
+
+    async function loadUsers() { const snap=await getDocs(colRef('users')); users=snap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(a.displayName||a.username||a.email||'').localeCompare(String(b.displayName||b.username||b.email||''))); renderUsers(); $('userModal').classList.add('active'); }
+    function renderUsers() {
+      $('userTableBody').innerHTML=users.map(u=>`<tr><td class="px-3 py-2 text-sm font-medium">${esc(u.email||'—')}<div class="text-xs text-gray-500">${esc(u.displayName||u.username||'')}</div></td><td class="px-3 py-2">${roleBadge(u.role)}</td><td class="px-3 py-2 text-sm">${esc(u.department||'—')}</td><td class="px-3 py-2 text-xs">${u.disabled?'Disabled':'Enabled'}</td><td class="px-3 py-2 text-center"><button data-edit-user="${esc(u.id)}" class="text-blue-600 text-xs font-semibold mr-2">Edit</button>${u.id!==currentUser.uid?`<button data-toggle-user="${esc(u.id)}" class="text-amber-600 text-xs font-semibold">${u.disabled?'Enable':'Disable'}</button>`:''}</td></tr>`).join('');
+    }
+    async function createOrUpdateUser(e) {
+      e.preventDefault(); if(!isAdmin()) return;
+      const email=$('newEmail').value.trim().toLowerCase(), displayName=$('newDisplayName').value.trim(), role=$('newRole').value, department=$('newDepartment').value.trim();
+      if(!email || !displayName || !ROLE_LIST.includes(role)) return showMessage('Missing/invalid data','Email, display name and a valid role are required.','error');
+      const editing=$('editUserId').value;
+      try {
+        if(editing){ await updateDoc(docRef('users',editing),{displayName,role,department,updatedAt:serverTimestamp(),disabled:$('newDisabled').checked}); await logAudit('User Role/Profile Changed',editing,displayName,`Role=${role}; Department=${department}; Disabled=${$('newDisabled').checked}`); showMessage('Updated','User profile updated.','success'); }
+        else {
+          const secondary=initializeApp(firebaseConfig,`ValidAppUserCreation_${Date.now()}`); const secAuth=getAuth(secondary);
+          const password=$('newPassword').value; if(password.length<8) throw new Error('Temporary password must contain at least 8 characters.');
+          const cred=await createUserWithEmailAndPassword(secAuth,email,password);
+          await setDoc(docRef('users',cred.user.uid),{email,displayName,username:email.split('@')[0],role,department,disabled:false,createdAt:serverTimestamp(),createdByUid:currentUser.uid});
+          await signOut(secAuth); await deleteApp(secondary); await logAudit('User Created',cred.user.uid,displayName,`Role=${role}; Department=${department}`); showMessage('Created','Firebase Authentication account and ValidApp profile created.','success');
+        }
+        $('userForm').reset(); $('editUserId').value=''; $('userFormTitle').textContent='Create User'; await loadUsers();
+      } catch(e){console.error(e); showMessage('User operation failed',friendlyError(e),'error');}
+    }
+    async function editUser(id){ const u=users.find(x=>x.id===id); if(!u)return; $('editUserId').value=id; $('newEmail').value=u.email||''; $('newDisplayName').value=u.displayName||u.username||''; $('newRole').value=u.role||ROLES.VIEWER; $('newDepartment').value=u.department||''; $('newDisabled').checked=!!u.disabled; $('newPassword').value=''; $('userFormTitle').textContent='Edit User'; }
+    async function toggleUser(id){ const u=users.find(x=>x.id===id); if(!u||id===currentUser.uid)return; confirmAction(u.disabled?'Enable User':'Disable User',`${u.disabled?'Enable':'Disable'} ${u.email}?`,async()=>{try{await updateDoc(docRef('users',id),{disabled:!u.disabled,updatedAt:serverTimestamp()}); await logAudit(u.disabled?'User Enabled':'User Disabled',id,u.displayName||u.email,`Account disabled=${!u.disabled}`); await loadUsers();}catch(e){showMessage('Operation failed',friendlyError(e),'error');}}); }
+
+    async function addModuleRecord(e) {
+      e.preventDefault(); if(!(isAdmin()||isCreator())) return showMessage('Unauthorized','You are not permitted to create this record.','error');
+      const module=$('moduleType').value; const editId=$('moduleEditId').value; const data={name:$('moduleName').value.trim(),reference:$('moduleReference').value.trim(),category:$('moduleCategory').value.trim(),equipmentOrSystem:$('moduleEquipment').value.trim(),plannedDate:$('moduleDate').value,description:$('moduleDescription').value.trim(),status:STATUS.DRAFT,createdByUid:currentUser.uid,createdByName:currentProfile.displayName||currentProfile.username||currentUser.email,department:currentProfile.department||'',createdAt:serverTimestamp(),updatedAt:serverTimestamp()};
+      if(!data.name || !data.reference) return showMessage('Missing required fields','Name and reference/ID are required.','error');
+      const collectionName=module==='Calibration'?'calibration':'qualification'; try{ if(editId){ const existing=moduleRecords.find(x=>x.id===editId); if(!existing || (existing.createdByUid!==currentUser.uid&&!isAdmin()) || ![STATUS.DRAFT,STATUS.RETURNED].includes(existing.status)) throw new Error('This record is not editable.'); await updateDoc(docRef(collectionName,editId),{...data,updatedAt:serverTimestamp()}); await logAudit(`${module} Record Modified`,editId,data.name,'Record information updated.'); showMessage('Updated',`${module} record updated.`,'success'); } else { const refDoc=await addDoc(colRef(collectionName),data); await logAudit(`${module} Record Created`,refDoc.id,data.name,'Record created as Draft.','',STATUS.DRAFT); showMessage('Created',`${module} record created successfully.`,'success'); } $('moduleForm').reset(); closeModals(); await loadModule(module);}catch(e){showMessage('Save failed',friendlyError(e),'error');}
+    }
+    async function loadModule(module){ currentModule=module; const collectionName=module==='Calibration'?'calibration':'qualification'; try{let q; if(isAdmin()||isCreator()||isReviewer()) q=query(colRef(collectionName),orderBy('createdAt','desc')); else if(isViewer()) q=query(colRef(collectionName),where('status','in',[STATUS.APPROVED,STATUS.COMPLETED])); else return; const snap=await getDocs(q); moduleRecords=snap.docs.map(d=>({id:d.id,...d.data()})); renderModuleTable();}catch(e){showMessage('Module access error',friendlyError(e),'error');}}
+    function renderModuleTable(){ $('moduleTitle').textContent=currentModule; $('moduleTableBody').innerHTML=moduleRecords.map(r=>{const owner=r.createdByUid===currentUser.uid||isAdmin(); const review=(can(ROLES.SECTION_HEAD)&&r.status===STATUS.PENDING_SECTION_HEAD)||(can(ROLES.QA_MANAGER)&&r.status===STATUS.PENDING_QA); const owner=r.createdByUid===currentUser.uid||isAdmin(); return `<tr><td class="px-4 py-3 font-medium">${esc(r.name)}<div class="text-xs text-gray-500">${esc(r.reference)}</div></td><td class="px-4 py-3 text-xs">${esc(r.category||'—')}</td><td class="px-4 py-3 text-xs">${esc(r.equipmentOrSystem||'—')}</td><td class="px-4 py-3">${statusBadge(r.status)}</td><td class="px-4 py-3 text-center"><button data-module-files="${esc(r.id)}" class="text-gray-600 text-xs font-semibold mr-2">Files</button>${owner&&[STATUS.DRAFT,STATUS.RETURNED].includes(r.status)?`<button data-module-edit="${esc(r.id)}" class="text-purple-600 text-xs font-semibold mr-2">Edit</button>`:''}${owner&&r.status===STATUS.DRAFT?`<button data-module-submit="${esc(r.id)}" class="text-purple-600 text-xs font-semibold mr-2">Submit</button>`:''}${review?`<button data-module-review="${esc(r.id)}" class="text-blue-600 text-xs font-semibold mr-2">Review</button>`:''}${review?`<button data-module-return="${esc(r.id)}" class="text-amber-600 text-xs font-semibold">Return</button>`:''}</td></tr>`}).join(''); }
+    async function moduleReview(id){const r=moduleRecords.find(x=>x.id===id);if(!r)return; const target=r.status===STATUS.PENDING_SECTION_HEAD?STATUS.PENDING_QA:STATUS.COMPLETED; confirmAction('Complete Review',`Complete review of ${r.name}?`,async comment=>{try{const c=currentModule==='Calibration'?'calibration':'qualification';await updateDoc(docRef(c,id),{status:target,updatedAt:serverTimestamp(),lastReviewedByUid:currentUser.uid});await addDoc(colRef('reviews'),{parentId:id,module:currentModule,studyName:r.name,reviewerUid:currentUser.uid,reviewerName:currentProfile.displayName||currentProfile.username,reviewerRole:currentProfile.role,action:'Review Completed',comment:comment||'',createdAt:serverTimestamp()});await logAudit(`${currentModule} Review Completed`,id,r.name,comment||'',r.status,target);closeModals();await loadModule(currentModule);showMessage('Review completed',`${currentModule} advanced to ${target}.`,'success');}catch(e){showMessage('Review failed',friendlyError(e),'error');}},false,'Review comment');}
+    async function moduleReturn(id){const r=moduleRecords.find(x=>x.id===id);if(!r)return;const allowed=(can(ROLES.SECTION_HEAD)&&r.status===STATUS.PENDING_SECTION_HEAD)||(can(ROLES.QA_MANAGER)&&r.status===STATUS.PENDING_QA);if(!allowed)return showMessage('Unauthorized','You cannot return this record.','error');confirmAction('Return for Correction',`Return ${r.name} to the Creator? A reason is mandatory.`,async reason=>{try{const c=currentModule==='Calibration'?'calibration':'qualification';await updateDoc(docRef(c,id),{status:STATUS.RETURNED,updatedAt:serverTimestamp(),returnedByUid:currentUser.uid});await addDoc(colRef('reviews'),{parentId:id,module:currentModule,studyName:r.name,reviewerUid:currentUser.uid,reviewerName:currentProfile.displayName||currentProfile.username,reviewerRole:currentProfile.role,action:'Returned for Revision',comment:reason,createdAt:serverTimestamp()});await logAudit(`${currentModule} Returned for Revision`,id,r.name,reason,r.status,STATUS.RETURNED);closeModals();await loadModule(currentModule);showMessage('Returned','Record returned to Creator.','success');}catch(e){showMessage('Return failed',friendlyError(e),'error');}},true,'Correction reason *');}
+async function moduleSubmit(id){const r=moduleRecords.find(x=>x.id===id);if(!r)return;if(!(r.createdByUid===currentUser.uid||isAdmin())||![STATUS.DRAFT,STATUS.RETURNED].includes(r.status))return showMessage('Unauthorized','You can only submit your own Draft or Returned record.','error');const c=currentModule==='Calibration'?'calibration':'qualification';try{await updateDoc(docRef(c,id),{status:STATUS.PENDING_SECTION_HEAD,submittedAt:serverTimestamp(),updatedAt:serverTimestamp()});await logAudit(`${currentModule} Submitted`,id,r.name,'Submitted for Section Head review.',r.status,STATUS.PENDING_SECTION_HEAD);await loadModule(currentModule);showMessage('Submitted','Record submitted to Section Head.','success');}catch(e){showMessage('Submission failed',friendlyError(e),'error');}}
+
+    function openModuleModal(record=null){ $('moduleForm').reset(); $('moduleEditId').value=record?.id||''; $('moduleType').value=record?.module||currentModule; $('moduleName').value=record?.name||''; $('moduleReference').value=record?.reference||''; $('moduleCategory').value=record?.category||''; $('moduleEquipment').value=record?.equipmentOrSystem||''; $('moduleDate').value=record?.plannedDate||''; $('moduleDescription').value=record?.description||''; $('moduleModalTitle').textContent=record?'Edit Record':'Create Calibration / Qualification Record'; $('moduleModal').classList.add('active'); }
+
+    // Navigation/event wiring
+    $('loginForm').addEventListener('submit',async e=>{e.preventDefault();try{await signInWithEmailAndPassword(auth,$('username').value.trim(),$('password').value);$('loginError').classList.add('hidden');}catch(err){$('loginError').textContent=err.code==='auth/invalid-credential'?'Invalid email or password.':friendlyError(err);$('loginError').classList.remove('hidden');}});
+    $('logoutBtn').addEventListener('click',()=>signOut(auth));
+    $('recordForm').addEventListener('submit',saveStudy);
+    $('moduleForm').addEventListener('submit',addModuleRecord);
+    $('userForm').addEventListener('submit',createOrUpdateUser);
+    $('sendResetBtn').addEventListener('click',async()=>{const email=$('newEmail').value.trim();if(!email)return showMessage('Email required','Enter the user email first.','error');try{await sendPasswordResetEmail(auth,email);showMessage('Password reset sent','Firebase sent a password reset email if the account exists.','success');}catch(e){showMessage('Reset failed',friendlyError(e),'error');}});
+    $('addRecordBtn').addEventListener('click',()=>openRecordModal());
+    $('addModuleBtn').addEventListener('click',openModuleModal);
+    $('userManagementBtn').addEventListener('click',loadUsers);
+    $('auditTrailBtn').addEventListener('click',loadAudit);
+    $('calibrationNav').addEventListener('click',()=>{currentModule=MODULES.CALIBRATION;showModule();});
+    $('qualificationNav').addEventListener('click',()=>{currentModule=MODULES.QUALIFICATION;showModule();});
+    $('studiesNav').addEventListener('click',()=>{currentModule=MODULES.STUDIES;showStudies();});
+    $('tabProcess').addEventListener('click',()=>{currentCategory=CATEGORIES.PROCESS;setCategoryTabs();renderStudies();});
+    $('tabHoldTime').addEventListener('click',()=>{currentCategory=CATEGORIES.HOLD_TIME;setCategoryTabs();renderStudies();});
+    $('tabCleaning').addEventListener('click',()=>{currentCategory=CATEGORIES.CLEANING;setCategoryTabs();renderStudies();});
+    ['searchInput','filterStage','filterStatus','filterScale'].forEach(id=>$(id).addEventListener('input',renderStudies));
+    $('clearFiltersBtn').addEventListener('click',()=>{['searchInput'].forEach(id=>$(id).value='');['filterStage','filterStatus','filterScale'].forEach(id=>$(id).value='All');renderStudies();});
+    $('acceptConfirmBtn').addEventListener('click',async()=>{const cb=pendingAction;const reason=$('reasonInput').value.trim();if(!$('reasonWrap').classList.contains('hidden')&&!reason)return showMessage('Comment required','A reason/comment is mandatory.','error');$('confirmModal').classList.remove('active');pendingAction=null;if(cb)await cb(reason);});
+    document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click',closeModals));
+    document.addEventListener('click',async e=>{
+      const t=e.target.closest('button');if(!t)return;
+      if(t.dataset.edit){const r=records.find(x=>x.id===t.dataset.edit);if(r)openRecordModal(r);}
+      if(t.dataset.submit) await submitStudy(t.dataset.submit);
+      if(t.dataset.review){const r=records.find(x=>x.id===t.dataset.review);if(r)confirmAction('Complete Review',`Complete the current review stage for ${r.productName}?`,async comment=>{try{await updateWorkflow(r.id,nextStatusForReview(r),comment);showMessage('Review completed','The study progressed to the next controlled stage.','success');}catch(e){showMessage('Review failed',friendlyError(e),'error');}},false,'Review comment');}
+      if(t.dataset.approve){const r=records.find(x=>x.id===t.dataset.approve);if(r)confirmAction('Approve Study',`Approve ${r.productName}? Approved records become protected from normal modification.`,async()=>{try{await updateWorkflow(r.id,STATUS.APPROVED,'Final QA Manager approval');showMessage('Approved','Study approved successfully.','success');}catch(e){showMessage('Approval failed',friendlyError(e),'error');}});}
+      if(t.dataset.reject){const r=records.find(x=>x.id===t.dataset.reject);if(r)confirmAction('Reject Study',`Reject ${r.productName}? A documented reason is mandatory.`,async reason=>{try{await updateWorkflow(r.id,STATUS.REJECTED,reason);showMessage('Rejected','Study rejected and the decision was recorded.','success');}catch(e){showMessage('Rejection failed',friendlyError(e),'error');}},true,'Rejection reason *');}
+      if(t.dataset.return) await returnStudy(t.dataset.return);
+      if(t.dataset.files) await openFiles(t.dataset.files,'study');
+      if(t.dataset.history) await showHistory(t.dataset.history);
+      if(t.dataset.viewFile){const f=filesByParent.find(x=>x.id===t.dataset.viewFile);if(f)await viewFile(f,false);}
+      if(t.dataset.downloadFile){const f=filesByParent.find(x=>x.id===t.dataset.downloadFile);if(f)await viewFile(f,true);}
+      if(t.dataset.deleteFile){const f=filesByParent.find(x=>x.id===t.dataset.deleteFile);if(f)await deleteFile(f);}
+      if(t.dataset.editUser) await editUser(t.dataset.editUser);
+      if(t.dataset.toggleUser) await toggleUser(t.dataset.toggleUser);
+      if(t.dataset.moduleFiles) await openFiles(t.dataset.moduleFiles,currentModule);
+      if(t.dataset.moduleReview) await moduleReview(t.dataset.moduleReview);
+      if(t.dataset.moduleReturn) await moduleReturn(t.dataset.moduleReturn);
+      if(t.dataset.moduleEdit){const r=moduleRecords.find(x=>x.id===t.dataset.moduleEdit);if(r)openModuleModal(r);}
+      if(t.dataset.moduleSubmit) await moduleSubmit(t.dataset.moduleSubmit);
+    });
+    $('fileInput').addEventListener('change',e=>{const id=$('fileParentId').value,mod=$('fileModule').value;uploadFiles(id,e.target,mod);e.target.value='';});
+
+    function setCategoryTabs(){document.querySelectorAll('.study-tab').forEach(x=>x.classList.remove('bg-white','text-primary','shadow-sm'));const id=currentCategory===CATEGORIES.PROCESS?'tabProcess':currentCategory===CATEGORIES.HOLD_TIME?'tabHoldTime':'tabCleaning';$(id).classList.add('bg-white','text-primary','shadow-sm');}
+    function showStudies(){currentModule=MODULES.STUDIES;$('studiesView').classList.remove('hidden');$('moduleView').classList.add('hidden');setCategoryTabs();configureNavigation();loadData();}
+    async function showModule(){ $('studiesView').classList.add('hidden');$('moduleView').classList.remove('hidden');configureNavigation();await loadModule(currentModule); }
+
+    onAuthStateChanged(auth,async user=>{
+      if(!user){currentUser=null;currentProfile=null;resetAppUI();return;}
+      try{currentUser=user;currentProfile=await loadProfile(user);$('loginSection').classList.add('hidden');$('dashboardSection').classList.remove('hidden');$('dashboardSection').classList.add('flex');$('userInfo').classList.remove('hidden');$('userInfo').classList.add('flex');configureNavigation();await logAudit('Login', '', '', 'Authenticated session established.');showStudies();}
+      catch(e){console.error(e);await signOut(auth);$('loginError').textContent=e.message;$('loginError').classList.remove('hidden');}
+    });
+  </script>
+  <script>tailwind.config={theme:{extend:{colors:{primary:'#1e40af',secondary:'#3b82f6',accent:'#10b981',dark:'#1f2937',light:'#f3f4f6'}}}};</script>
+  <style>
+    body{font-family:Inter,Arial,sans-serif;background:#f3f4f6}.modal{display:none}.modal.active{display:flex}.study-tab{transition:.2s}.scrollbar::-webkit-scrollbar{width:8px;height:8px}.scrollbar::-webkit-scrollbar-thumb{background:#c1c1c1;border-radius:4px}
+  </style>
+</head>
+<body class="text-gray-800 h-screen flex flex-col overflow-hidden">
+<nav class="bg-primary text-white shadow-lg p-4 flex-shrink-0"><div class="container mx-auto flex justify-between items-center gap-4"><div class="flex items-center gap-3"><i class="fas fa-flask text-2xl"></i><h1 class="text-2xl font-bold tracking-wider">ValidApp</h1><span class="hidden md:inline text-blue-100 text-sm">Validation & Quality Workflow</span></div><div id="userInfo" class="hidden items-center gap-3"><span class="bg-blue-800 px-3 py-1 rounded-full text-sm font-semibold"><i class="fas fa-user-circle mr-1"></i><span id="currentUserDisplay"></span> · <span id="currentUserRole"></span> · <span id="currentUserDepartment"></span></span><button id="studiesNav" class="hover:bg-blue-700 px-2 py-1 rounded">Studies</button><button id="calibrationNav" class="hover:bg-blue-700 px-2 py-1 rounded">Calibration</button><button id="qualificationNav" class="hover:bg-blue-700 px-2 py-1 rounded">Qualification</button><button id="userManagementBtn" class="hidden hover:bg-blue-700 px-2 py-1 rounded"><i class="fas fa-users-cog mr-1"></i>Users</button><button id="auditTrailBtn" class="hidden hover:bg-blue-700 px-2 py-1 rounded"><i class="fas fa-history mr-1"></i>Audit</button><button id="logoutBtn" class="bg-red-500 hover:bg-red-600 px-3 py-1 rounded font-semibold"><i class="fas fa-sign-out-alt mr-1"></i>Logout</button></div></div></nav>
+<main class="flex-grow container mx-auto p-4 overflow-hidden">
+<section id="loginSection" class="max-w-md mx-auto mt-20 bg-white p-8 rounded-xl shadow-2xl"><div class="text-center mb-8"><div class="inline-block bg-blue-100 p-4 rounded-full mb-4"><i class="fas fa-shield-alt text-4xl text-primary"></i></div><h2 class="text-2xl font-bold">System Login</h2><p class="text-gray-500 text-sm mt-1">Firebase Authentication · Controlled access</p></div><form id="loginForm" class="space-y-5"><div><label class="block text-sm font-medium mb-1">Email</label><input type="email" id="username" class="w-full p-3 border rounded-lg" required autocomplete="username"></div><div><label class="block text-sm font-medium mb-1">Password</label><input type="password" id="password" class="w-full p-3 border rounded-lg" required autocomplete="current-password"></div><div id="loginError" class="text-red-600 text-sm hidden font-medium text-center bg-red-50 p-3 rounded"></div><button class="w-full bg-primary hover:bg-blue-800 text-white font-bold py-3 rounded-lg">Sign In</button></form></section>
+<section id="dashboardSection" class="hidden flex-col h-full overflow-hidden">
+<div id="studiesView" class="flex flex-col h-full overflow-hidden"><div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 gap-4"><div class="flex bg-gray-200 p-1 rounded-lg overflow-x-auto"><button id="tabProcess" class="study-tab bg-white text-primary shadow-sm px-4 py-2 rounded-md font-semibold">Process Validation</button><button id="tabHoldTime" class="study-tab text-gray-600 px-4 py-2 rounded-md font-semibold">Hold Time Studies</button><button id="tabCleaning" class="study-tab text-gray-600 px-4 py-2 rounded-md font-semibold">Cleaning Validation</button></div><button id="addRecordBtn" class="hidden bg-accent hover:bg-green-600 text-white px-5 py-2 rounded-lg font-semibold"><i class="fas fa-plus mr-2"></i>Add Study</button></div><div class="bg-white p-4 rounded-t-xl shadow-sm border flex flex-wrap gap-4 items-end"><div class="flex-grow min-w-[200px]"><label class="block text-xs font-semibold text-gray-500 uppercase mb-1">Search Product / API</label><input id="searchInput" class="w-full p-2 border rounded-md" placeholder="Search by name..."></div><div><label class="block text-xs font-semibold text-gray-500 uppercase mb-1">Stage</label><select id="filterStage" class="p-2 border rounded-md"><option>All</option><option>Raw</option><option>Bulk</option><option>Finished Product</option><option>Cleaning Validation</option><option>CHT</option><option>DHT</option><option>Campaign Length</option></select></div><div><label class="block text-xs font-semibold text-gray-500 uppercase mb-1">Status</label><select id="filterStatus" class="p-2 border rounded-md"><option>All</option><option>Draft</option><option>Pending Section Head</option><option>Pending Reviewer</option><option>Pending Deputy QA</option><option>Pending QA Manager</option><option>Returned for Revision</option><option>Approved</option><option>Rejected</option></select></div><div><label class="block text-xs font-semibold text-gray-500 uppercase mb-1">Scale</label><select id="filterScale" class="p-2 border rounded-md"><option>All</option><option>Lab Scale</option><option>Pilot Scale</option><option>Commercial Scale</option></select></div><button id="clearFiltersBtn" class="px-4 py-2 text-gray-500 hover:bg-gray-100 rounded">Clear Filters</button></div><div class="bg-white rounded-b-xl shadow-md border flex-grow overflow-hidden"><div class="overflow-auto scrollbar h-full"><table class="min-w-full divide-y divide-gray-200"><thead class="bg-gray-50 sticky top-0 z-10"><tr><th class="px-4 py-3 text-left text-xs">Product / API</th><th class="px-4 py-3 text-left text-xs">Category</th><th class="px-4 py-3 text-left text-xs">Date & Stage</th><th class="px-4 py-3 text-left text-xs">Scale & Version</th><th class="px-4 py-3 text-left text-xs">Reason / Notes</th><th class="px-4 py-3 text-left text-xs">Status</th><th class="px-4 py-3 text-center text-xs">Actions</th></tr></thead><tbody id="dataTableBody" class="divide-y text-sm"></tbody></table></div><div id="emptyState" class="hidden p-10 text-center text-gray-500">No records match your criteria or current role.</div></div></div>
+<div id="moduleView" class="hidden flex-col h-full overflow-hidden"><div class="flex justify-between items-center mb-4"><div><h2 id="moduleTitle" class="text-2xl font-bold">Calibration</h2><p class="text-gray-500 text-sm">Controlled document and approval workflow</p></div><button id="addModuleBtn" class="hidden bg-accent text-white px-5 py-2 rounded-lg font-semibold"><i class="fas fa-plus mr-2"></i>Add Record</button></div><div class="bg-white rounded-xl shadow border flex-grow overflow-auto"><table class="min-w-full divide-y"><thead class="bg-gray-50"><tr><th class="px-4 py-3 text-left text-xs">Name / Reference</th><th class="px-4 py-3 text-left text-xs">Category</th><th class="px-4 py-3 text-left text-xs">Equipment/System</th><th class="px-4 py-3 text-left text-xs">Status</th><th class="px-4 py-3 text-center text-xs">Actions</th></tr></thead><tbody id="moduleTableBody" class="divide-y text-sm"></tbody></table></div></div>
+</section></main>
+
+<!-- Study modal -->
+<div id="recordModal" class="modal fixed inset-0 bg-gray-900/60 z-50 items-center justify-center p-4"><div class="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[95vh] overflow-y-auto"><div class="bg-primary text-white p-4 flex justify-between"><h3 id="modalTitle" class="text-xl font-bold">Add Validation Study</h3><button data-close><i class="fas fa-times"></i></button></div><form id="recordForm" class="p-6 space-y-4"><input type="hidden" id="recordId"><div class="grid md:grid-cols-2 gap-4"><div class="md:col-span-2"><label class="block text-sm font-medium">Product / API Name *</label><input id="productName" class="w-full p-2 border rounded" required></div><div><label class="block text-sm font-medium">Study Category *</label><select id="studyCategory" class="w-full p-2 border rounded"><option>Process Validation</option><option>Hold Time Study</option><option>Cleaning Validation</option></select></div><div><label class="block text-sm font-medium">Product Type *</label><select id="productType" class="w-full p-2 border rounded"><option>Finished Product</option><option>Bulk Product</option><option>API</option></select></div><div><label class="block text-sm font-medium">Study Date *</label><input type="date" id="studyDate" class="w-full p-2 border rounded" required></div><div><label class="block text-sm font-medium">Stage *</label><select id="stage" class="w-full p-2 border rounded"><option>Raw</option><option>Bulk</option><option>Finished Product</option><option>Cleaning Validation</option><option>CHT</option><option>DHT</option><option>Campaign Length</option></select></div><div><label class="block text-sm font-medium">Version *</label><input id="version" class="w-full p-2 border rounded" required></div><div><label class="block text-sm font-medium">Scale *</label><select id="scale" class="w-full p-2 border rounded"><option>Lab Scale</option><option>Pilot Scale</option><option>Commercial Scale</option></select></div><div><label class="block text-sm font-medium">Reviewer Department</label><input id="reviewerDepartment" class="w-full p-2 border rounded"></div><div class="flex items-center gap-2 mt-6"><input type="checkbox" id="requireOtherDeptReview"><label for="requireOtherDeptReview" class="text-sm">Require Other Department Reviewer</label></div></div><div><label class="block text-sm font-medium">Reason for Validation / Study *</label><textarea id="reason" rows="3" class="w-full p-2 border rounded" required></textarea></div><div><label class="block text-sm font-medium">Additional Notes</label><textarea id="notes" rows="3" class="w-full p-2 border rounded"></textarea></div><div class="bg-gray-50 p-3 rounded text-xs text-gray-600">Documents are uploaded after the study is saved. Allowed: PDF, DOC, DOCX, XLS, XLSX, JPG/JPEG, PNG. Maximum 25 MB per file.</div><div class="flex justify-end gap-3"><button type="button" data-close class="px-4 py-2 bg-gray-200 rounded">Cancel</button><button class="px-4 py-2 bg-primary text-white rounded">Save Study</button></div></form></div></div>
+
+<!-- File modal -->
+<div id="fileModal" class="modal fixed inset-0 bg-gray-900/60 z-50 items-center justify-center p-4"><div class="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col"><div class="bg-dark text-white p-4 flex justify-between"><h3 class="text-xl font-bold"><i class="fas fa-folder-open mr-2"></i>Controlled Documents</h3><button data-close><i class="fas fa-times"></i></button></div><div class="p-5 overflow-auto"><div class="flex flex-wrap items-center gap-3 mb-4"><label class="bg-primary text-white px-4 py-2 rounded cursor-pointer"><i class="fas fa-upload mr-2"></i>Add Files<input id="fileInput" type="file" class="hidden" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/jpeg,image/png"></label><span class="text-xs text-gray-500">Max 25 MB/file</span><span id="uploadProgress" class="text-xs font-semibold text-blue-700"></span></div><input type="hidden" id="fileParentId"><input type="hidden" id="fileModule"><div id="fileList" class="space-y-3"></div></div></div></div>
+
+<!-- History -->
+<div id="historyModal" class="modal fixed inset-0 bg-gray-900/60 z-50 items-center justify-center p-4"><div class="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col"><div class="bg-dark text-white p-4 flex justify-between"><h3 class="text-xl font-bold">Review & Comment History</h3><button data-close><i class="fas fa-times"></i></button></div><div id="historyBody" class="p-6 overflow-auto space-y-4"></div></div></div>
+
+<!-- User management -->
+<div id="userModal" class="modal fixed inset-0 bg-gray-900/60 z-50 items-center justify-center p-4"><div class="bg-white rounded-xl shadow-2xl w-full max-w-6xl max-h-[92vh] flex flex-col"><div class="bg-dark text-white p-4 flex justify-between"><h3 class="text-xl font-bold">User Management</h3><button data-close><i class="fas fa-times"></i></button></div><div class="p-4 bg-gray-50 border-b"><form id="userForm" class="grid md:grid-cols-6 gap-3 items-end"><input type="hidden" id="editUserId"><div><label class="text-xs">Email *</label><input id="newEmail" type="email" class="w-full p-2 border rounded" required></div><div><label class="text-xs">Display Name *</label><input id="newDisplayName" class="w-full p-2 border rounded" required></div><div><label class="text-xs">Role *</label><select id="newRole" class="w-full p-2 border rounded">${ROLE_LIST.map(r=>`<option>${r}</option>`).join('')}</select></div><div><label class="text-xs">Department</label><input id="newDepartment" class="w-full p-2 border rounded"></div><div><label class="text-xs">Temporary Password</label><input id="newPassword" type="password" minlength="8" class="w-full p-2 border rounded"></div><div class="flex gap-2"><button class="bg-accent text-white px-3 py-2 rounded text-sm">Save</button><button type="button" id="sendResetBtn" class="bg-gray-700 text-white px-3 py-2 rounded text-sm">Reset</button></div><div class="md:col-span-6 flex gap-2 items-center"><input type="checkbox" id="newDisabled"><label class="text-sm">Disable this profile (when editing)</label></div></form></div><div class="overflow-auto"><table class="min-w-full divide-y"><thead class="bg-gray-100"><tr><th class="px-3 py-2 text-left text-xs">Email / Name</th><th class="px-3 py-2 text-left text-xs">Role</th><th class="px-3 py-2 text-left text-xs">Department</th><th class="px-3 py-2 text-left text-xs">Status</th><th class="px-3 py-2 text-center text-xs">Actions</th></tr></thead><tbody id="userTableBody" class="divide-y"></tbody></table></div></div></div>
+
+<!-- Audit -->
+<div id="auditModal" class="modal fixed inset-0 bg-gray-900/60 z-50 items-center justify-center p-4"><div class="bg-white rounded-xl shadow-2xl w-full max-w-6xl h-[85vh] flex flex-col"><div class="bg-dark text-white p-4 flex justify-between"><h3 class="text-xl font-bold">Immutable Audit Trail</h3><button data-close><i class="fas fa-times"></i></button></div><div class="overflow-auto flex-grow"><table class="min-w-full divide-y"><thead class="bg-gray-100 sticky top-0"><tr><th class="px-3 py-2 text-left text-xs">Timestamp</th><th class="px-3 py-2 text-left text-xs">User / Role</th><th class="px-3 py-2 text-left text-xs">Action</th><th class="px-3 py-2 text-left text-xs">Study</th><th class="px-3 py-2 text-left text-xs">Details / Status</th></tr></thead><tbody id="auditTableBody" class="divide-y"></tbody></table></div></div></div>
+
+<!-- Module record -->
+<div id="moduleModal" class="modal fixed inset-0 bg-gray-900/60 z-50 items-center justify-center p-4"><div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl"><div class="bg-primary text-white p-4 flex justify-between"><h3 id="moduleModalTitle" class="text-xl font-bold">Create Calibration / Qualification Record</h3><button data-close><i class="fas fa-times"></i></button></div><form id="moduleForm" class="p-6 space-y-4"><input type="hidden" id="moduleEditId"><select id="moduleType" class="w-full p-2 border rounded"><option>Calibration</option><option>Qualification</option></select><input id="moduleName" class="w-full p-2 border rounded" placeholder="Record / Equipment Name *" required><input id="moduleReference" class="w-full p-2 border rounded" placeholder="Reference / ID *" required><input id="moduleCategory" class="w-full p-2 border rounded" placeholder="Category (e.g. DQ, IQ, OQ, PQ, Requalification)"><input id="moduleEquipment" class="w-full p-2 border rounded" placeholder="Equipment / System"><input id="moduleDate" type="date" class="w-full p-2 border rounded"><textarea id="moduleDescription" class="w-full p-2 border rounded" rows="4" placeholder="Description / scope"></textarea><div class="flex justify-end gap-3"><button type="button" data-close class="px-4 py-2 bg-gray-200 rounded">Cancel</button><button class="px-4 py-2 bg-primary text-white rounded">Create Draft</button></div></form></div></div>
+
+<div id="confirmModal" class="modal fixed inset-0 bg-gray-900/60 z-[60] items-center justify-center p-4"><div class="bg-white rounded-lg shadow-xl w-full max-w-md"><div class="p-6"><h3 id="confirmTitle" class="text-xl font-bold">Confirm Action</h3><p id="confirmText" class="text-gray-600 py-4"></p><div id="reasonWrap" class="hidden"><label id="reasonLabel" class="block text-sm font-medium mb-1">Reason *</label><textarea id="reasonInput" rows="4" class="w-full p-2 border rounded"></textarea></div></div><div class="bg-gray-50 px-6 py-3 flex justify-end gap-3"><button data-close class="px-4 py-2 bg-gray-200 rounded">Cancel</button><button id="acceptConfirmBtn" class="px-4 py-2 bg-primary text-white rounded">Yes, Proceed</button></div></div></div>
+<div id="messageModal" class="modal fixed inset-0 bg-gray-900/60 z-[70] items-center justify-center p-4"><div class="bg-white rounded-lg shadow-xl w-full max-w-sm text-center"><div id="messageIcon" class="pt-6"></div><h3 id="messageTitle" class="text-xl font-bold px-6 pt-2">Information</h3><p id="messageText" class="text-gray-600 px-6 py-4"></p><button data-close class="bg-primary text-white font-bold py-2 px-8 rounded-lg mb-5">OK</button></div></div>
+</body></html>
